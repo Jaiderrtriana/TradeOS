@@ -1001,3 +1001,217 @@ not a decision this sprint is authorized to make on its own.
 - Catalogs frontend (Catalogs Management page) — Sprint 2.3.
 - Any metadata field beyond `kind`/`name`/`is_active` — `TRADEOS_DATABASE
   _DESIGN.md` §6.8 states that is the complete confirmed shape today.
+
+## Sprint 2.3 — Configuration & Catalogs Frontend (Milestone M2)
+
+Phase 2's final sprint: the Scoring Versions page (view/publish) and the
+Catalogs Management page, "an admin-facing screen pair fully wired to
+Sprints 2.1-2.2's endpoints" — both rendered as two tabs under the single,
+pre-existing `/configuration` route and sidebar entry
+(`TRADEOS_FRONTEND_BLUEPRINT.md` §4.1: "Configuration: Scoring &
+Catalogs"; §4.2: "sub-views are tabs, not separate sidebar entries" — no
+navigation or routing change was needed, both already matched this
+sprint's target shape from Sprint 0.3).
+
+### A missing backend endpoint, found and fixed before the frontend could proceed
+
+**This is the most consequential finding of this sprint.** While building
+the Scoring Versions page's version-detail panel (`TRADEOS_FRONTEND
+_BLUEPRINT.md` §8.5: "DataTable (criteria + their weights for this
+version)"), no endpoint existed to read a version's current weights —
+Sprint 2.1 had only ever implemented `POST /configuration/versions/{id}
+/weights` (add-or-update **one** weight, returning only that one row).
+There was no way to answer "what weights does this draft already have"
+from the API at all.
+
+Per the user's explicit instruction not to invent new endpoints or touch
+the backend this sprint, implementation paused and this gap was reported
+before writing any more frontend code. **Approved resolution:** add the
+missing `GET /configuration/versions/{id}/weights` endpoint as a scoped,
+explicitly-documented correction to Sprint 2.1 — not silently bundled
+into "frontend work," and not worked around with a degraded UI that could
+never show a draft's existing weights.
+
+- `app/modules/configuration/application/list_configuration_weights.py`
+  — `ListConfigurationWeightsUseCase` (pure read, delegates to the
+  already-existing `ScoringWeightRepository.list_by_version`, itself
+  unchanged since Sprint 2.1 — this was a presentation/application-layer
+  gap, not a data-layer one).
+- `app/modules/configuration/presentation/router.py` — the new `GET`
+  route, same auth/response-shape conventions as every other endpoint in
+  this router.
+- `tests/configuration/test_configuration_flow.py` — one new integration
+  test: an empty list before any weight exists, then the real weight
+  after one is added via the existing `POST`.
+- No migration, no schema change — `scoring_weights` and its repository
+  method already existed; only the missing read path was added.
+
+### Added
+- `frontend/src/components/Tabs.tsx` — Radix Tabs wrapper (new
+  dependency `@radix-ui/react-tabs`, approved), the first real consumer
+  of `TRADEOS_FRONTEND_BLUEPRINT.md` §4.2's "sub-views are tabs" pattern;
+  Statistics (Overview/By Dimension/Rolling, later phase) will reuse it.
+- `frontend/src/components/ConfirmDialog.tsx` — Radix AlertDialog
+  wrapper (new dependency `@radix-ui/react-alert-dialog`, approved —
+  `AlertDialog` specifically, not the generic `Dialog`, matching
+  `TRADEOS_API_SPECIFICATION.md` §3.5's "irreversible in effect"
+  framing of publishing). Used only for the Publish confirmation
+  (§6.8) — Catalog deactivation has no confirmation step, matching the
+  documented flow (§6.11) exactly.
+- `frontend/src/components/DataTable.tsx` — the first DataTable in the
+  project (`TRADEOS_FRONTEND_BLUEPRINT.md` §7). No pagination or
+  virtualization (§16 confirms neither is needed at Configuration/
+  Catalogs' data volume). Keyboard-accessible row selection: native
+  `row` role preserved, `tabIndex`/`Enter`/`Space` handling and
+  `aria-selected` added rather than overriding the row's semantic role
+  (see Bugs below).
+- `frontend/src/components/Badge.tsx` — status indicator, built only
+  from the color tokens already in `tailwind.config.ts` (`accent`/
+  `muted`/neutral-bordered) — no new Design System tokens added.
+- `frontend/src/features/configuration/{types.ts,api.ts,catalogsApi.ts,
+  schemas.ts}` — types mirrored field-for-field from the real backend
+  schemas (verified directly against the committed `schemas.py`/
+  `catalog_schemas.py`, not just the API Specification prose); Zod
+  validation limits matching the backend's own `Field(...)` constraints
+  exactly (`max_length=40/120`, `weight >= 0`).
+- `frontend/src/features/configuration/components/ScoringVersionsTab.tsx`
+  — versions list, create-draft form, inline version-detail expansion
+  (approved: no Drawer, no nested route — one URL, `/configuration`,
+  throughout), read-only criteria/profile reference joined into the
+  weights table, weight add/update form (rendered only when
+  `status === "draft"` — "blocked entirely, not just validated," per
+  §5.5 — the form doesn't exist in the DOM for a published/superseded
+  version, not merely disabled), and the Publish action behind
+  `ConfirmDialog`.
+- `frontend/src/features/configuration/components/CatalogsManagementTab.tsx`
+  — one page filtered by `kind` (§5.7/§6.11, not five separate pages),
+  add/rename/deactivate, active-state `Badge`.
+- `frontend/e2e/configuration-and-catalogs.spec.ts` — cross-stack E2E
+  (same real-backend prerequisite as `auth-and-preferences.spec.ts`):
+  full draft-create → weight-add → publish flow; catalog entry add →
+  deactivate; unauthenticated redirect. Every test uses a unique label/
+  name — Configuration/Catalogs data is global, not per-user
+  (`TRADEOS_API_SPECIFICATION.md` §4.6), so the shared dev database's
+  real Sprint 2.1/2.2 seed (`v1.0`, 37 catalog entries) and prior test
+  runs' leftover rows are always still present.
+- `frontend/src/features/configuration/schemas.test.ts` — 11 Vitest unit
+  tests for the Zod schemas above.
+
+### Modified
+- `frontend/src/features/configuration/pages/ConfigurationPage.tsx` —
+  no longer `PlaceholderPage`; hosts the two tabs.
+- `frontend/src/components/ErrorBanner.tsx` — added an
+  `UNPROCESSABLE_ENTITY` entry to the shared `PRESENTATION` map (see
+  Implementation notes) — a visual-only fix, the HTTP contract itself is
+  unchanged.
+- `frontend/package.json` — added `@radix-ui/react-tabs` and
+  `@radix-ui/react-alert-dialog` only, both pre-approved (Sections 4-5
+  of this sprint's analysis). No TanStack Table, no icon library, no
+  virtualization library — all explicitly declined as unnecessary at
+  this data volume.
+
+### Bugs found and fixed (during this sprint's own implementation and pre-commit audit)
+- **`DataTable`'s keyboard-accessibility fix broke row semantics.** To
+  satisfy `jsx-a11y/click-events-have-key-events` for clickable rows, the
+  first version set `role="button"` on the `<tr>` — which overrides a
+  table row's implicit `row` role entirely. The E2E test caught this
+  immediately: `getByRole("row", ...)` could no longer find a just-created
+  version because its accessible role had become `button`. **Fix:** kept
+  the native `row` role, added `tabIndex`, `Enter`/`Space` key handling,
+  and `aria-selected` — keyboard-operable without erasing the table
+  semantics screen readers rely on.
+- **`ErrorBanner`'s `PRESENTATION` map had no entry for
+  `UNPROCESSABLE_ENTITY`** — Sprint 2.1 introduced this 422 code (see
+  that sprint's own CHANGELOG entry on `INVARIANT_VIOLATION` vs.
+  `UNPROCESSABLE_ENTITY`) but the shared error banner, written in Sprint
+  0.3 before any real business-rule 422 existed, only knew about
+  `INVARIANT_VIOLATION`. Without this fix, a real Configuration/Catalogs
+  422 (e.g., publishing with an inactive criterion) would have rendered
+  the generic "Something unexpected happened" fallback instead of a
+  correct message. Presented identically to `INVARIANT_VIOLATION` (§17:
+  plain language, code hidden from the primary message).
+- **The dev database's Configuration seed data (criteria/weights/the
+  published `v1.0` version) was missing** when cross-stack E2E testing
+  began — a leftover consequence of Sprint 2.2's own "migrations from a
+  clean database" verification (`docker compose down -v`), after which
+  `scripts/seed_configuration.py` was never re-run. Not a code defect;
+  re-ran the existing, unmodified Sprint 2.1 script to restore it, and
+  confirmed this is purely a local dev-environment state issue, never a
+  step skipped in the actual, already-committed migration/seed sequence.
+
+### Implementation notes (not architectural decisions)
+- **Radix Select + React Hook Form:** the project's existing `Select`
+  (Sprint 1.2, Radix-based) had no prior usage inside an RHF-managed
+  form. Integrated via RHF's `Controller` (the documented pattern for
+  controlled third-party inputs) rather than manual `setValue`/`watch`
+  wiring, for both the weight editor's Criterion/Profile pickers and the
+  catalog entry creation form's Kind picker.
+- **`zod.coerce.number()` needs two form-value types.** The weight
+  form's raw input (a string from the number `<input>`) differs from its
+  coerced output (a number); `useForm` is typed against `z.input<...>`,
+  the resolver/submit handler against `z.output<...>` — otherwise
+  `tsc` rejects the mismatch between what RHF's `defaultValues` expects
+  and what `zodResolver` produces after coercion.
+- **`staleTime: 60_000` for every Configuration/Catalogs query** — a
+  concrete number for `TRADEOS_FRONTEND_BLUEPRINT.md` §2.7's "safe to
+  cache client-side for short periods," which names no exact duration.
+  Documented here as an implementation default, the same posture as
+  prior sprints' undocumented-numeric-value decisions (e.g., Sprint 1.1's
+  token expiry).
+- **`Idempotency-Key` intentionally not sent.** `TRADEOS_API_SPECIFICATION
+  .md` §3.6 describes it generally for every resource-creating `POST`,
+  but the real backend (Sprints 2.1-2.2) never implemented handling for
+  it on any Configuration/Catalogs endpoint. Sending the header from the
+  frontend without backend support would be dead weight — no actual
+  double-submission protection — so it was deliberately omitted.
+  **Registered as backend technical debt** for a future sprint, not
+  implemented as a no-op here.
+
+### Verification performed
+- `pytest tests/` (backend) — **86 passed** (1 new: the added `GET`
+  weights endpoint; 85 carried over from Sprints 0.1-2.2). No
+  regressions.
+- `ruff format --check` / `ruff check` / `mypy app` (backend) — clean
+  (113 source files).
+- `pnpm typecheck` / `pnpm lint` / `pnpm format:check` (frontend) —
+  clean.
+- `pnpm test` (Vitest) — **25 passed** (11 new; 14 carried over).
+- `pnpm build` — succeeded (436.27 kB JS / 11.03 kB CSS, gzip 137.00 kB
+  / 2.77 kB).
+- `pnpm test:e2e` (Playwright) — **7 passed** (3 new: full draft-create/
+  weight/publish flow, catalog add/deactivate, unauthenticated redirect;
+  4 carried over from Sprints 0.3/1.2), run against the real backend on
+  a database confirmed to hold the actual Sprint 2.1/2.2 seed data.
+- Audit pass before commit: no cross-feature imports (every
+  `features/configuration/*` file imports only from shared `src/api`,
+  `src/components`, or within its own feature folder); no N+1-shaped
+  data fetching (a fixed, small number of queries regardless of list
+  size — no per-row query loops); no dead code, unused imports, or
+  TODO/FIXME/HACK markers in any file added or modified this sprint;
+  every new shared component (`Tabs`, `ConfirmDialog`, `DataTable`,
+  `Badge`) confirmed to have a real consumer; basic accessibility
+  verified (native table semantics preserved, keyboard operability on
+  interactive rows, Radix-provided ARIA roles/focus-trapping on Tabs and
+  AlertDialog, `aria-label` on every Select).
+
+### Milestone M2 — achieved
+Per `TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` §7: a default
+`ScoringConfigurationVersion` is published and all five Catalog kinds
+hold real, Excel-derived seed data — true at the backend level since
+Sprint 2.2's own close. This sprint makes it independently, visually
+demonstrable through the UI: the Scoring Versions tab shows `v1.0` as
+`published`, and the Catalogs Management tab shows all five kinds
+populated, exactly as `PROJECT_AUDIT.md` §3.1 confirmed.
+
+### Deferred
+- `Idempotency-Key` support on Configuration/Catalogs `POST` endpoints —
+  registered backend technical debt (see Implementation notes above),
+  not this sprint's scope.
+- `ScoringCriterion`/`ScoringProfile` create/edit UI — approved
+  out-of-scope decision; the Master Plan's own "(view/publish)" framing
+  and `TRADEOS_FRONTEND_BLUEPRINT.md` §5.5's User Actions list both
+  confirm criteria are reference-only on this page.
+- Catalog entry `reactivate` — no endpoint exists (Sprint 2.2's own
+  documented contradiction between the Domain Model's lifecycle diagram
+  and the API Specification/Backend Blueprint); nothing to wire up.
+- Any Trading/Evaluation/Statistics page — later phases.

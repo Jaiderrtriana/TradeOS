@@ -8,6 +8,15 @@ import type { ApiError } from "../api/errors";
 const PRESENTATION: Record<string, string> = {
   VALIDATION_FAILED: "Some fields need correction.",
   INVARIANT_VIOLATION: "This action isn't allowed.",
+  // Sprint 2.1's Configuration/Catalogs Use Cases raise this for
+  // well-formed-but-business-rule-violating requests (e.g. max_value <
+  // min_value, publishing a version that references an inactive
+  // criterion) — a real, already-shipped 422 code distinct from
+  // INVARIANT_VIOLATION (no Domain Invariant ID applies to these checks)
+  // and from VALIDATION_FAILED (Pydantic shape validation). Presented the
+  // same way §17 prescribes for INVARIANT_VIOLATION: plain language, code
+  // hidden from the primary message.
+  UNPROCESSABLE_ENTITY: "This action isn't allowed.",
   UNAUTHENTICATED: "Please sign in again.",
   FORBIDDEN: "This wasn't found.",
   NOT_FOUND: "This wasn't found.",

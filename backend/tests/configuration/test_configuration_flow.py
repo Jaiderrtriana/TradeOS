@@ -301,6 +301,51 @@ async def test_update_draft_weight_add_then_update(client):
     assert updated.json()["id"] == added.json()["id"]
 
 
+async def test_list_configuration_weights_returns_current_weights_for_a_version(client):
+    """GET /configuration/versions/{id}/weights — added Sprint 2.3 as a
+    scoped correction to Sprint 2.1 (see CHANGELOG.md)."""
+    headers = await _auth_headers(client)
+    criterion_id = f"confidence.list_weight_{uuid.uuid4().hex[:8]}"
+    await client.post(
+        "/api/v1/configuration/scoring-criteria",
+        json={
+            "id": criterion_id,
+            "engine_type_code": "confidence",
+            "name": "List Weight Test",
+            "source_field": "list_weight_field",
+            "min_value": 0,
+            "max_value": 100,
+        },
+        headers=headers,
+    )
+    version_response = await client.post(
+        "/api/v1/configuration/versions",
+        json={"version_label": f"v-{uuid.uuid4().hex[:8]}"},
+        headers=headers,
+    )
+    version_id = version_response.json()["id"]
+
+    empty_listing = await client.get(
+        f"/api/v1/configuration/versions/{version_id}/weights", headers=headers
+    )
+    assert empty_listing.status_code == 200
+    assert empty_listing.json() == []
+
+    await client.post(
+        f"/api/v1/configuration/versions/{version_id}/weights",
+        json={"criterion_id": criterion_id, "profile_code": "day_trading", "weight": 0.4},
+        headers=headers,
+    )
+
+    populated_listing = await client.get(
+        f"/api/v1/configuration/versions/{version_id}/weights", headers=headers
+    )
+    assert populated_listing.status_code == 200
+    assert len(populated_listing.json()) == 1
+    assert populated_listing.json()[0]["criterion_id"] == criterion_id
+    assert populated_listing.json()[0]["weight"] == 0.4
+
+
 async def test_update_draft_weight_on_published_version_returns_409(client):
     """TRADEOS_DATABASE_DESIGN.md §6.6: published versions are immutable."""
     headers = await _auth_headers(client)

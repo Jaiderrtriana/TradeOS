@@ -36,6 +36,9 @@ from app.modules.configuration.application.deactivate_scoring_criterion import (
 from app.modules.configuration.application.list_configuration_versions import (
     ListScoringConfigurationVersionsUseCase,
 )
+from app.modules.configuration.application.list_configuration_weights import (
+    ListConfigurationWeightsUseCase,
+)
 from app.modules.configuration.application.list_engine_types import ListEngineTypesUseCase
 from app.modules.configuration.application.list_scoring_criteria import (
     ListScoringCriteriaUseCase,
@@ -223,6 +226,27 @@ async def create_draft_configuration_version(
     version = await use_case.execute(payload.version_label, created_by_user_id=user_id)
     await session.commit()
     return _version_response(version)
+
+
+@router.get("/versions/{version_id}/weights", response_model=list[ScoringWeightResponse])
+async def list_configuration_weights(
+    version_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+    user_id: UUID = Depends(get_current_user_id),
+) -> list[ScoringWeightResponse]:
+    use_case = ListConfigurationWeightsUseCase(ScoringWeightRepository(session))
+    weights = await use_case.execute(version_id)
+    return [
+        ScoringWeightResponse(
+            id=w.id,
+            configuration_version_id=w.configuration_version_id,
+            criterion_id=w.criterion_id,
+            profile_code=w.profile_code,
+            weight=w.weight,
+            is_active=w.is_active,
+        )
+        for w in weights
+    ]
 
 
 @router.post("/versions/{version_id}/weights", response_model=ScoringWeightResponse)
