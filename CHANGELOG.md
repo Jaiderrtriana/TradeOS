@@ -1425,6 +1425,25 @@ domain engines work exclusively with the stable `criterion_id`
 exactly once, inside `PreviewEvaluationUseCase` (Application layer) —
 Sprint 3.1's already-shipped, already-tested domain layer is untouched.
 
+**Corrected mid-sprint, while preparing the Bias data proposal (below):**
+the translation was first built as a strict `dict[str, str]`
+(`source_field -> criterion_id`), assuming one real checklist field
+belongs to exactly one criterion. Re-extracting the real Excel's Bias
+Engine section (`legacy/Trading Journal v2.0 Stable.xlsx`, CHECKLIST
+rows 48-54) to draft that proposal showed this assumption is false: the
+real `BIAS_INDEX` formula reads the exact same raw fields (`dxy`, `spy`,
+`atr`, and ~32 others) that Confidence, Execution, and Market Context's
+own criteria already read — one real answer legitimately feeds more than
+one engine at once. Flagged to you before proceeding (this touches
+already-approved Sprint 3.2 code, not just new Bias data); you approved
+the fan-out fix. `criterion_ids_by_source_field` is now
+`dict[str, list[str]]`, and every criterion referencing a given
+`source_field` receives that answer, not just the last one found while
+grouping. Application layer only — the domain layer is still untouched.
+Regression-tested: `test_preview_evaluation_source_field_fans_out_to
+_multiple_criteria` (two criteria, two different engines, one shared
+`source_field`, one answer, both engines score correctly off it).
+
 ### Configuration cross-module factories, mirroring the Sprint 1.2 Preferences pattern
 
 Four `build_*` factories added to Configuration's own Application layer
@@ -1489,12 +1508,13 @@ relied upon rather than re-filtering by `criterion.is_active` here.
   including DI-04's structural test), `test_bias_engine.py` (7,
   synthetic fixtures only, DI-05/DI-08), `test_evaluation_engine.py` (2,
   orchestrator-level DI-05/DI-08 across all five engines at once),
-  `test_preview_evaluation_flow.py` (5, integration — the first tests
+  `test_preview_evaluation_flow.py` (6, integration — the first tests
   exercising Evaluation against a real database, full HTTP round-trip
-  through the real FastAPI app).
+  through the real FastAPI app; includes the source_field fan-out
+  regression test added during the mid-sprint correction above).
 
 ### Verification performed
-- `pytest` (full suite) — **121 passed** (19 new; 102 carried over).
+- `pytest` (full suite) — **122 passed** (20 new; 102 carried over).
 - `ruff format` / `ruff check` / `mypy` — clean (mypy's only two findings
   are pre-existing, unrelated to this sprint: a Starlette typing mismatch
   in `test_correlation_id_middleware.py` and a missing `types-python-jose`

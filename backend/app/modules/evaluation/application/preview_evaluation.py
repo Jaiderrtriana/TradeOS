@@ -12,6 +12,15 @@ exclusively with the stable `criterion_id` (TRADEOS_DOMAIN_MODEL.md
 INV-CRITERION-01). That translation happens here, once, and the already
 -shipped domain layer is never touched.
 
+The translation is a fan-out (one `source_field` -> many `criterion_id`s),
+not a 1:1 map: the real Excel's Bias Index formula reads the exact same
+raw checklist fields (`dxy`, `spy`, `atr`, ...) that Confidence, Execution,
+and Market Context's own criteria already read (confirmed while preparing
+Sprint 3.2's Bias data proposal). A single incoming answer for `dxy` must
+therefore be able to feed `market_context.dxy` AND a future `bias.dxy`
+criterion simultaneously — never just the last criterion found for that
+source_field.
+
 Reads Configuration exclusively through the four `build_*` factories
 Configuration's own Application layer exposes (Sprint 3.2) — never
 importing Configuration's domain or infrastructure directly
@@ -92,10 +101,12 @@ class PreviewEvaluationUseCase:
             code: [] for code in ENGINE_TYPE_CODES
         }
         engine_by_criterion_id: dict[str, str] = {}
-        criterion_id_by_source_field: dict[str, str] = {}
+        criterion_ids_by_source_field: dict[str, list[str]] = {}
         for criterion in criteria:
             engine_by_criterion_id[criterion.id] = criterion.engine_type_code
-            criterion_id_by_source_field[criterion.source_field] = criterion.id
+            criterion_ids_by_source_field.setdefault(criterion.source_field, []).append(
+                criterion.id
+            )
             if criterion.engine_type_code not in criteria_by_engine:
                 continue
             criteria_by_engine[criterion.engine_type_code].append(
@@ -125,9 +136,9 @@ class PreviewEvaluationUseCase:
             )
 
         translated_answers: dict[str, str | float] = {
-            criterion_id_by_source_field[source_field]: value
+            criterion_id: value
             for source_field, value in checklist_answers.items()
-            if source_field in criterion_id_by_source_field
+            for criterion_id in criterion_ids_by_source_field.get(source_field, [])
         }
 
         return evaluate(

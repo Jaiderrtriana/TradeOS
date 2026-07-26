@@ -159,6 +159,76 @@ async def test_preview_evaluation_source_field_translation(client):
     assert breakdown[0]["criterion_id"] == confidence_id
 
 
+async def test_preview_evaluation_source_field_fans_out_to_multiple_criteria(client):
+    """One real checklist field can back more than one engine's criterion
+    at once (e.g. the real Excel's `dxy` field feeds both Market Context's
+    weighted average and Bias's raw-sum GROSS_SCORE) -- a single answer
+    must reach every criterion referencing that source_field, not just the
+    last one PreviewEvaluationUseCase happens to see while grouping."""
+    headers = await _auth_headers(client)
+    suffix = uuid.uuid4().hex[:8]
+    shared_source_field = f"shared_{suffix}_field"
+
+    market_context_id = f"market_context.shared_{suffix}"
+    await client.post(
+        "/api/v1/configuration/scoring-criteria",
+        json={
+            "id": market_context_id,
+            "engine_type_code": "market_context",
+            "name": "Shared Market Context",
+            "source_field": shared_source_field,
+            "min_value": 0,
+            "max_value": 100,
+            "category_map": {"Yes": 100, "No": 0},
+        },
+        headers=headers,
+    )
+    bias_id = f"bias.shared_{suffix}"
+    await client.post(
+        "/api/v1/configuration/scoring-criteria",
+        json={
+            "id": bias_id,
+            "engine_type_code": "bias",
+            "name": "Shared Bias",
+            "source_field": shared_source_field,
+            "min_value": 0,
+            "max_value": 100,
+            "category_map": {"Yes": 50, "No": -50},
+        },
+        headers=headers,
+    )
+
+    version_response = await client.post(
+        "/api/v1/configuration/versions",
+        json={"version_label": f"v-shared-{suffix}"},
+        headers=headers,
+    )
+    version_id = version_response.json()["id"]
+    for criterion_id in (market_context_id, bias_id):
+        weight_response = await client.post(
+            f"/api/v1/configuration/versions/{version_id}/weights",
+            json={"criterion_id": criterion_id, "profile_code": PROFILE, "weight": 1.0},
+            headers=headers,
+        )
+        assert weight_response.status_code == 200, weight_response.text
+    publish_response = await client.post(
+        f"/api/v1/configuration/versions/{version_id}/publish", headers=headers
+    )
+    assert publish_response.status_code == 200, publish_response.text
+
+    response = await client.post(
+        "/api/v1/evaluation/preview",
+        json={"checklist_answers": {shared_source_field: "Yes"}, "scoring_profile": PROFILE},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["market_context"]["score"] == 100
+    assert body["market_context"]["breakdown"][0]["criterion_id"] == market_context_id
+    assert body["bias"]["score"] == 50
+    assert body["bias"]["breakdown"][0]["criterion_id"] == bias_id
+
+
 async def test_preview_evaluation_unrecognized_scoring_profile_returns_422(client):
     headers = await _auth_headers(client)
     response = await client.post(
