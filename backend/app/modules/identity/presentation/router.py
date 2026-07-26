@@ -23,6 +23,9 @@ from app.modules.identity.presentation.schemas import (
     RegisterResponse,
     TokenPairResponse,
 )
+from app.modules.preferences.application.create_default_preferences import (
+    build_create_default_preferences_use_case,
+)
 from app.platform.db.session import get_db_session
 from app.platform.security.dependencies import get_current_user_id
 
@@ -33,7 +36,10 @@ router = APIRouter(prefix="/auth", tags=["authentication"])
 async def register(
     payload: RegisterRequest, session: AsyncSession = Depends(get_db_session)
 ) -> RegisterResponse:
-    use_case = RegisterUseCase(UserAccountRepository(session))
+    use_case = RegisterUseCase(
+        UserAccountRepository(session),
+        build_create_default_preferences_use_case(session),
+    )
     result = await use_case.execute(payload.email, payload.password)
     await session.commit()
     return RegisterResponse(user_id=result.user_id, email=result.email)

@@ -1,3 +1,4 @@
+import { getAccessToken } from "../auth/tokenStorage";
 import { networkError, parseApiError } from "./errors";
 
 /**
@@ -5,10 +6,11 @@ import { networkError, parseApiError } from "./errors";
  * code permitted to know an endpoint's URL, method, and payload shape."
  * No feature module constructs a request manually.
  *
- * Sprint 0.3 scope: the generic request primitive and its error-envelope
- * handling only. No concrete endpoint function (login, trades, ...) exists
- * yet — those arrive with the module that owns them, per
- * TRADEOS_IMPLEMENTATION_MASTER_PLAN.md's phase ordering.
+ * Sprint 1.2: attaches `Authorization: Bearer <token>` automatically when
+ * an access token is present (read from src/auth/tokenStorage.ts — see
+ * that file for the localStorage decision and its rationale). No
+ * automatic refresh-on-401 retry is implemented (approved scope for this
+ * sprint) — a caller whose token has expired simply sees the 401.
  */
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
@@ -20,12 +22,15 @@ export interface ApiRequestOptions {
 }
 
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+  const accessToken = getAccessToken();
+
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       method: options.method ?? "GET",
       headers: {
         "Content-Type": "application/json",
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         ...options.headers,
       },
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,

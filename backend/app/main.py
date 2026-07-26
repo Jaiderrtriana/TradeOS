@@ -1,16 +1,20 @@
 """
 TradeOS backend — entry point.
 
-Sprint 1.1 adds the first real business router: Identity's four
-Authentication endpoints (TRADEOS_API_SPECIFICATION.md §6.1). Every other
-module's presentation layer is still empty scaffolding.
+Sprint 1.1 added Identity's four Authentication endpoints
+(TRADEOS_API_SPECIFICATION.md §6.1). Sprint 1.2 adds Preferences'
+GET/PATCH (§6.3). Every other module's presentation layer is still empty
+scaffolding.
 """
 
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.modules.identity.presentation.router import router as identity_router
+from app.modules.preferences.presentation.router import router as preferences_router
+from app.platform.config import settings
 from app.platform.errors import register_exception_handlers
 from app.platform.events.dispatcher import dispatcher
 from app.platform.logging import configure_logging
@@ -22,7 +26,8 @@ configure_logging()
 # Endpoints TRADEOS_API_SPECIFICATION.md §6.1 explicitly marks
 # "Auth Required: No" — register/login/refresh issue or exchange
 # credentials themselves, so they cannot require an access token to reach.
-# /auth/logout is deliberately absent: it requires a valid access token.
+# /auth/logout and every /preferences endpoint are deliberately absent:
+# both require a valid access token (§6.1, §6.3).
 PUBLIC_PATHS = frozenset(
     {
         "/api/v1/auth/register",
@@ -49,12 +54,27 @@ app = FastAPI(
 
 register_exception_handlers(app)
 app.include_router(identity_router, prefix="/api/v1")
+app.include_router(preferences_router, prefix="/api/v1")
 
 # Middleware order matters: Starlette runs the LAST-added middleware
-# OUTERMOST (first on the way in), so CorrelationIdMiddleware — added last
-# — always runs before AuthenticationMiddleware. This is what guarantees
-# every response, including a 401 rejection, is already correlation-ID
-# bound (Sprint 0.2 approved ordering: Correlation ID -> Authentication ->
-# FastAPI routing).
+# OUTERMOST (first on the way in). Order, outermost to innermost:
+# CORS -> Correlation ID -> Authentication -> routing.
+#
+# CORS must be outermost of all: a cross-origin preflight (OPTIONS) never
+# carries the Authorization header, so if AuthenticationMiddleware ran
+# first it would reject every preflight with 401 before CORSMiddleware
+# ever got a chance to answer it — no browser-based frontend could reach
+# this API at all. (No frozen document specifies CORS; it is a pure
+# browser cross-origin mechanism, not an architectural decision — see
+# CHANGELOG.md, Sprint 1.2.)
+#
+# Correlation ID still runs before Authentication so even a 401 rejection
+# is already correlation-ID bound (Sprint 0.2 approved ordering).
 app.add_middleware(AuthenticationMiddleware, public_paths=PUBLIC_PATHS)
 app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_allowed_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)

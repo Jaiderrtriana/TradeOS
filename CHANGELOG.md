@@ -402,3 +402,207 @@ knows about any of it.
 - Roles/permissions, multi-session-aware logout, Domain Events for
   Identity actions (`BE-1`, already registered as accepted-as-is by the
   Master Plan) — none part of this sprint's approved scope.
+
+## Sprint 1.2 — Preferences Backend/Frontend & Authentication Frontend
+
+Phase 1 of the Implementation Master Plan. Scope: the Preferences module
+(`GET`/`PATCH /preferences`, `TRADEOS_API_SPECIFICATION.md` §6.3;
+`identity.user_preferences` per `TRADEOS_DATABASE_DESIGN.md` §6.2) plus the
+first real frontend feature slice — Login/Register pages and a
+Settings → Preferences page — the Master Plan's own "first fully vertical
+(frontend-to-database) slice."
+
+### Decisions approved before implementation (documented per your instructions)
+
+- **`UserPreferences` auto-creation at registration (approved option a):**
+  `RegisterUseCase` (Identity) now also creates the new user's default
+  preferences, in the same transaction as the `UserAccount` insert, by
+  calling a Use Case published from Preferences' own Application layer
+  (`build_create_default_preferences_use_case(session)` —
+  `app/modules/preferences/application/create_default_preferences.py`).
+  This is an implementation decision, not something the frozen documents
+  state directly: `TRADEOS_API_SPECIFICATION.md` §6.3 requires preferences
+  to exist "automatically... at registration," but
+  `TRADEOS_DOMAIN_MODEL.md` §11 defines no `UserRegistered` Domain Event
+  for Preferences to react to asynchronously instead. Given no event
+  exists to hook into, a synchronous same-transaction call was used,
+  mirroring the already-established Trading → Evaluation pattern
+  (`TRADEOS_SYSTEM_ARCHITECTURE.md` ADR-03). Module-boundary rule
+  preserved: Identity imports only Preferences' Application-layer factory,
+  never its Infrastructure or Domain layers directly (§3.3, Forbidden
+  Dependencies).
+- **Token storage: `localStorage` for both access and refresh tokens**
+  (`frontend/src/auth/tokenStorage.ts`). Forced by the already-frozen API
+  contract: `TRADEOS_API_SPECIFICATION.md` §4.3 returns the refresh token
+  in the `POST /auth/refresh` JSON *body*, not an httpOnly cookie, so the
+  client must be able to read it back with JavaScript to resubmit it —
+  ruling out the httpOnly-cookie pattern regardless of preference. **This
+  must be revisited if the API's refresh contract ever changes to a
+  cookie-based flow.**
+- **No automatic refresh-on-401 interceptor this sprint.** `api/client.ts`
+  only attaches `Authorization: Bearer <token>` when an access token is
+  present; a caller whose token has expired simply sees the 401. Automatic
+  refresh retry is deferred, not implemented partially.
+- **Milestone M1 (liveness endpoint, TLS) not blocking this sprint.**
+  Both belong to later phases per the Master Plan's own planning
+  (liveness: `TRADEOS_BACKEND_BLUEPRINT.md` §11, Open Question BE-7,
+  deferred to Sprint 9.1; TLS: infrastructure/deployment concern, no
+  sprint in Phase 0–1 owns it). Sprint 1.2 does not implement either.
+- **Settings scope: Preferences only.** No Profile page, no Users page, no
+  advanced notification configuration — all explicitly out of scope.
+- **`notification_settings` persisted, no UI.** The column and domain
+  field exist (`JSONB`, defaults to `{}`) and round-trip through
+  `GET`/`PATCH /preferences`, but no frontend control renders it — the
+  Domain Model does not yet define its shape, so no interface bound to an
+  undefined thing was implemented.
+- **Login and Register are two separate routes** (`/login`, `/register`),
+  each with its own form and its own Zod schema, rather than a single
+  toggling form.
+- **Frontend dependencies:** TanStack Query, React Hook Form, Zod, Radix
+  UI (`@radix-ui/react-select`, `@radix-ui/react-label`) — all already
+  named in `TRADEOS_TECHNICAL_STACK.md` §6.3–§6.5; no other technology was
+  added.
+
+### Added
+- `app/modules/preferences/domain/user_preferences.py` — `UserPreferences`
+  dataclass (`TRADEOS_DOMAIN_MODEL.md` §8.12): `theme="dark"`,
+  `language="es"`, `notification_settings: dict` (own `default_factory`,
+  not shared across instances).
+- `app/modules/preferences/infrastructure/models.py`,
+  `repository.py` — `UserPreferencesModel` (schema `preferences`, typed
+  `Mapped`/`mapped_column`, cross-schema FK to `identity.user_accounts.id`
+  exactly as `TRADEOS_DATABASE_DESIGN.md` §6.2 specifies) and
+  `UserPreferencesRepository` (single-row point queries only — no N+1).
+- `app/modules/preferences/application/` — `CreateDefaultPreferencesUseCase`
+  (+ its cross-module factory), `GetPreferencesUseCase`,
+  `UpdatePreferencesUseCase` (partial update — only supplied fields
+  change). `Get`/`UpdatePreferencesUseCase` raise a plain `RuntimeError`
+  (surfacing as an unhandled 500, not a documented 404) if preferences are
+  missing for an authenticated user — §6.3 guarantees this endpoint "never
+  404s," so reaching that branch means the registration invariant itself
+  was violated, a genuine bug rather than an expected condition.
+- `app/modules/preferences/presentation/schemas.py`, `router.py` —
+  `GET`/`PATCH /preferences`, both behind `get_current_user_id` (auth
+  required, §6.3).
+- `alembic/versions/0003_create_preferences_schema.py` — `preferences`
+  schema and `user_preferences` table, matching §6.2 with no extension
+  needed (unlike Sprint 1.1's `refresh_tokens`).
+- `tests/preferences/` — 2 domain unit tests (defaults; mutable-default
+  isolation) + 8 integration tests (auto-creation at registration,
+  never-404s, 401 without auth, `PATCH` updates theme/language, partial
+  `PATCH` preserves untouched fields, invalid enum → 422, two users have
+  independent preferences).
+- `frontend/src/auth/tokenStorage.ts`, `AuthContext.tsx`,
+  `ProtectedRoute.tsx` — localStorage-backed session persistence (plain
+  functions, not a hook, since `api/client.ts` needs to read the current
+  token outside React) and a Context mirroring Sprint 0.3's
+  `ErrorContext` pattern (`TRADEOS_TECHNICAL_STACK.md` §6.3: UI state is
+  plain Context, no library).
+- `frontend/src/features/authentication/` — `api.ts`, `schemas.ts`
+  (Zod, password `min(8)` on register), `pages/LoginPage.tsx`,
+  `pages/RegisterPage.tsx` (React Hook Form + Zod + TanStack `useMutation`).
+- `frontend/src/features/settings/` — `api.ts`,
+  `pages/PreferencesPage.tsx` (TanStack `useQuery`/`useMutation` + two
+  Radix `Select`s for theme/language).
+- `frontend/src/components/Select.tsx` — reusable Radix-based `Select`.
+- `frontend/e2e/auth-and-preferences.spec.ts` — the Master Plan's own
+  named Phase 1 E2E test ("register, log in, change a preference"): full
+  vertical-slice flow plus an unauthenticated-redirect test. Requires the
+  real backend running (documented in the file's own docstring — not
+  automated by `playwright.config.ts`'s `webServer`, which manages only
+  the Vite dev server; see Implementation notes).
+- `frontend/src/auth/tokenStorage.test.ts`,
+  `features/authentication/schemas.test.ts` — 9 new Vitest tests.
+
+### Modified
+- `app/modules/identity/application/register.py`,
+  `presentation/router.py` — wire `CreateDefaultPreferencesUseCase` into
+  registration (see Decisions above).
+- `app/main.py` — registers `preferences_router`; adds `CORSMiddleware`
+  (see Bugs found and fixed).
+- `app/platform/config.py` — added `cors_allowed_origins` (default
+  `["http://localhost:5173"]`, matching Vite's dev port). No frozen
+  document specifies CORS — it is a pure browser cross-origin mechanism
+  (`TRADEOS_SYSTEM_ARCHITECTURE.md` §12.1: frontend and backend are served
+  independently, i.e. cross-origin by construction), not an
+  architectural/domain decision, so it was added without stopping to ask.
+- `alembic/env.py`, `tests/conftest.py` — import Preferences' models;
+  create the `preferences` schema alongside `platform`/`identity`.
+- `frontend/src/api/client.ts` — attaches `Authorization: Bearer <token>`
+  automatically when present.
+- `frontend/src/App.tsx` — added `QueryClientProvider` (module-level
+  singleton `QueryClient`) and `AuthProvider`.
+- `frontend/src/router.tsx` — added `/register`; wrapped `AppShell` in
+  `<ProtectedRoute>`; replaced the Sprint 0.3 `AuthenticationPage`/
+  `SettingsPage` placeholders with `LoginPage`/`RegisterPage`/
+  `PreferencesPage` (placeholders deleted, not left dead).
+- `frontend/package.json` — added the four approved dependencies listed
+  above.
+
+### Bugs found and fixed (during this sprint's own verification, before commit)
+- **CORS preflight 405:** the first real cross-stack E2E run showed
+  `OPTIONS /api/v1/auth/register` → `405 Method Not Allowed` — no
+  `CORSMiddleware` existed to answer the browser's preflight. **Fix:**
+  added `CORSMiddleware` as the *outermost* middleware in `app/main.py`
+  (Starlette runs the last-added middleware first/outermost).
+  `AuthenticationMiddleware` must not run before `CORSMiddleware`: a
+  cross-origin preflight never carries `Authorization`, so if
+  Authentication ran first it would reject every preflight with 401
+  before CORS ever got to answer it. Verified via a direct `curl -X
+  OPTIONS ... -H "Origin: http://localhost:5173"` returning 200, and by
+  re-running the full backend `pytest` suite (46/46, no regressions to
+  Sprint 0.2's correlation-ID/auth-rejection guarantees).
+- **Playwright assertion false failure:** `toHaveText("Dark")` failed
+  against the Radix `Select` trigger, whose accessible text also includes
+  the decorative "▾" icon (`"Dark▾"`). **Fix:** changed the three
+  affected assertions to `toContainText`.
+
+### Implementation notes (not architectural decisions)
+- **Vitest has no `localStorage`** (`environment: "node"`, per Sprint
+  0.3's `vite.config.ts` and the Technical Stack's Vitest-only mandate).
+  `tokenStorage.test.ts` installs a minimal in-memory `Storage`-shaped
+  mock via `beforeAll` in the test file itself, rather than adding
+  `jsdom` as a new dependency — keeping this sprint's dependency additions
+  to exactly the four approved ones.
+- **The cross-stack E2E test's backend prerequisite is manual, not
+  automated.** `playwright.config.ts`'s `webServer` manages only the Vite
+  dev server (Sprint 0.3); wiring it to also start FastAPI + a migrated
+  Postgres instance is CI/tooling infrastructure work with no frozen-doc
+  mandate this sprint, so it was left as a documented prerequisite in the
+  spec file's own docstring instead of built.
+
+### Verification performed
+- `docker compose down -v && up -d` + `alembic upgrade head` from an
+  empty database — `0001 → 0002 → 0003` all applied cleanly in sequence.
+- `pytest tests/` — **46 passed** (10 new: 8 integration + 2 unit; 36
+  carried over from Sprints 0.1–1.1). No regressions, re-confirmed again
+  after the CORS fix and again against the freshly-migrated database.
+- `ruff format --check` / `ruff check` — clean.
+- `mypy app` — clean (85 source files).
+- `pnpm lint` (ESLint), `pnpm typecheck` (`tsc -b --noEmit`),
+  `pnpm format:check` — clean.
+- `pnpm test` (Vitest) — **14 passed** (5 carried over from Sprint 0.3 + 3
+  `tokenStorage` + 6 `schemas`).
+- `pnpm build` — succeeded (400.09 kB JS / 8.64 kB CSS).
+- `pnpm test:e2e` (Playwright) — **4 passed** (2 carried over from Sprint
+  0.3 + the new full auth+preferences vertical-slice flow +
+  unauthenticated-redirect), against the real backend + freshly-migrated
+  database.
+- Audit pass (mirroring Sprint 1.1's): no secrets in logs/errors/exception
+  bodies (tokens/passwords never logged; `RuntimeError` messages carry
+  only a `user_id`, never a credential); `GET`/`PATCH /preferences`
+  response shapes verified field-for-field against §6.3; Identity →
+  Preferences dependency confirmed one-directional (Preferences never
+  imports Identity); no N+1 queries (repository methods are single-row
+  point lookups/updates); no dead code, unused imports, or
+  TODO/FIXME/HACK markers found in any file added or modified this
+  sprint; no leftover references to the deleted `AuthenticationPage`/
+  `SettingsPage` placeholders.
+
+### Deferred
+- Automatic refresh-on-401 retry, Profile/Users pages, advanced
+  notification settings UI, light-theme visual implementation, liveness
+  endpoint, TLS — all explicitly out of this sprint's approved scope (see
+  Decisions above).
+- Automating the E2E backend prerequisite in `playwright.config.ts` — left
+  as documented manual setup.

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from testcontainers.community.postgres import PostgresContainer
 
 from app.modules.identity.infrastructure import models as identity_models  # noqa: F401
+from app.modules.preferences.infrastructure import models as preferences_models  # noqa: F401
 from app.platform.db import models as platform_models  # noqa: F401  (registers metadata)
 from app.platform.db.base import Base
 
@@ -30,6 +31,7 @@ async def db_session(postgres_container):
     async with engine.begin() as conn:
         await conn.execute(text("CREATE SCHEMA IF NOT EXISTS platform"))
         await conn.execute(text("CREATE SCHEMA IF NOT EXISTS identity"))
+        await conn.execute(text("CREATE SCHEMA IF NOT EXISTS preferences"))
         await conn.run_sync(Base.metadata.create_all)
 
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)

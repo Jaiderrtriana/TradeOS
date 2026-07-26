@@ -28,5 +28,13 @@ class Settings(BaseSettings):
     # spec states explicitly.
     refresh_token_expire_days: int = 30
 
+    # No frozen document specifies CORS — a pure browser-security
+    # mechanism, not an architectural/domain/API decision, required for
+    # any browser-based frontend to reach this backend at all
+    # (TRADEOS_SYSTEM_ARCHITECTURE.md §12.1: frontend and backend are
+    # served independently, i.e. cross-origin by construction). Default
+    # matches Vite's dev server port; override for any other environment.
+    cors_allowed_origins: list[str] = ["http://localhost:5173"]
+
 
 settings = Settings()
