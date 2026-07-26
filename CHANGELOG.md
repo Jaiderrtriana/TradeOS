@@ -1215,3 +1215,150 @@ populated, exactly as `PROJECT_AUDIT.md` §3.1 confirmed.
   documented contradiction between the Domain Model's lifecycle diagram
   and the API Specification/Backend Blueprint); nothing to wire up.
 - Any Trading/Evaluation/Statistics page — later phases.
+
+## Sprint 3.1 — Confidence & Quality Engines
+
+Phase 3's first sprint: the generic `EvaluationEngine` weighted-scoring
+core, and its first two real instances — Confidence and Quality
+(`TRADEOS_DOMAIN_MODEL.md` §12.1). Pure domain layer only: no
+infrastructure, no database access, no HTTP endpoint, no wiring to
+Configuration's real (persisted) data — all explicitly approved scope,
+matching the Exit Criteria's own "unit-tested with zero infrastructure
+dependencies."
+
+### The Master Plan's cited "reference code" does not exist in this repository
+
+`TRADEOS_IMPLEMENTATION_MASTER_PLAN.md`'s Sprint 3.1 objective says
+"Confidence already has reference code," citing
+`TRADEOS_SYSTEM_ARCHITECTURE.md` §15's Known Gap, which in turn refers to
+a `tradeos-backend` reference implementation. That code is not present
+anywhere in this repository — confirmed already during Sprint 2.1
+planning (`legacy/` holds only the source Excel) and again here. Nothing
+was "ported." Confidence and Quality were built fresh from the real
+weights/category-maps Sprint 2.1 already extracted, verified, and seeded
+— the same source of truth, not a substitute for it.
+
+### The historical `round_half_up` defect, reproduced with real data before being fixed
+
+No document describes the defect's actual mechanism — only that it
+existed and was fixed in the (absent) reference implementation. Rather
+than guessing, the real, already-computed values for the two actual trade
+rows in `legacy/Trading Journal v2.0 Stable.xlsx` were extracted and
+hand-verified against Sprint 2.1's real seeded weights: row 2's raw
+Confidence weighted score is exactly `48.5` (`|21|×0.5 + 40×0.2 +
+100×0.15 + 100×0.15`), and Excel's own `ROUND(48.5, 0)` produces `49`.
+Python's built-in `round(48.5)` produces `48` — Python 3's `round()` uses
+round-half-to-even ("banker's rounding"); Excel's `ROUND()` rounds half
+away from zero. They silently disagree exactly on `.5` boundaries. This
+is the real, reproduced historical defect, not a hypothetical one.
+
+**Fix:** `app/modules/evaluation/domain/rounding.py`'s `round_half_up()`,
+built on `decimal.Decimal` with `ROUND_HALF_UP` (stdlib, no new
+dependency), converting through `Decimal(str(value))` rather than
+`Decimal(value)` directly — the latter would import the float's raw
+binary-representation artifacts (e.g. `1.005` is actually stored as
+`~1.00499999999999989...`) into the rounding decision, silently
+reintroducing a different, subtler version of the same class of bug.
+Permanently regression-tested (`tests/evaluation/test_round_half_up.py`)
+against both real rows, explicitly contrasted against Python's `round()`
+on the same value.
+
+### Added
+- `app/shared_kernel/value_objects.py` — `Grade` (enum), `Score`
+  (dataclass). The first real use of `shared_kernel`
+  (`TRADEOS_SYSTEM_ARCHITECTURE.md` §3.2's "one deliberate exception" to
+  modules communicating only through contracts) since Sprint 0.1 first
+  scaffolded the empty package.
+- `app/modules/evaluation/domain/evaluation_criterion.py`,
+  `evaluation_weight.py` — `EvaluationCriterion`/`EvaluationWeight`,
+  Evaluation's **own** input DTOs, deliberately not
+  `configuration.domain.scoring_criterion.ScoringCriterion`/
+  `scoring_weight.ScoringWeight` — importing those would violate
+  `TRADEOS_SYSTEM_ARCHITECTURE.md` §3.3 (Forbidden Dependencies: a module
+  may never import another module's domain layer directly). The real
+  translation from Configuration's persisted rows into this shape is
+  Sprint 3.2's `PreviewEvaluation` Use Case's job (Application layer),
+  not this sprint's.
+- `app/modules/evaluation/domain/criterion_breakdown_row.py` —
+  `CriterionBreakdownRow` (Domain Invariant DI-08: every Score must be
+  explainable). Not a `shared_kernel` type — §3.2 does not name it there;
+  it lives in Evaluation's own domain layer, mirroring (never importing)
+  `trading.evaluation_snapshot_breakdowns`'s eventual shape.
+- `app/modules/evaluation/domain/scoring_core.py` — the generic core
+  (`PROJECT_AUDIT.md` §3.2: "una clase de cálculo... instanciada 5
+  veces"): `normalize()` (category-map lookup, or linear min/max rescale
+  to 0-100 when no `category_map` is set — implemented now per your
+  approval, even though Confidence's only numeric criterion is already
+  0-100 by construction, so Sprint 3.2's Market Context is the first real
+  exercise of the non-identity path) and `compute_weighted_score()`
+  (INV-WEIGHT-01: divides by the sum of *active* weights only; a missing
+  answer is excluded from both sides of the division — "handled
+  gracefully," `TRADEOS_BACKEND_BLUEPRINT.md` §4.1 — never an error).
+  Carries no rounding, no grading, and no per-criterion value transform —
+  those are each specific engine's own concern, kept out of the shared
+  core deliberately so it stays reusable by Execution/Market Context/Bias
+  in Sprint 3.2 without inherited assumptions that don't hold for them.
+- `app/modules/evaluation/domain/grading.py` — `derive_grade()` and the
+  real grade thresholds (A+≥95, A≥90, B≥80, C≥70, else D — the same
+  values already extracted from and approved against the Excel's `⚙️
+  CONFIG` sheet in Sprint 2.1), plus `finalize_score()` (round + grade),
+  factored out specifically to avoid duplicating that tail between
+  `confidence_engine.py` and `quality_engine.py`. Hardcoded domain
+  constants, not configurable — no frozen document models grade
+  thresholds as data.
+- `app/modules/evaluation/domain/confidence_engine.py` — `score_confidence()`.
+  The only Confidence-specific logic beyond calling the shared core: its
+  `bias_index_at_entry` criterion is scored on the *absolute value* of
+  the signed Bias Index (`ROUND(ABS(AF2)*W_CONF_BIAS + ..., 0)` in the
+  real Excel formula) — applied here, immediately before calling
+  `scoring_core`, never inside the generic core itself (a future signed
+  engine like Bias must not inherit it).
+- `app/modules/evaluation/domain/quality_engine.py` — `score_quality()`,
+  net-new (no reference code covered it). Domain Invariant DI-03 /
+  INV-QUALITY-01 (Quality independent of P&L) is enforced *structurally*
+  — the function's signature has no parameter shaped like a financial
+  outcome anywhere, not merely "unused today."
+- `tests/evaluation/` — 21 tests total:
+  - `test_round_half_up.py` (5): the real historical case, an explicit
+    contrast against Python's `round()`, the second real row, a negative
+    value, and `ndigits` support.
+  - `test_confidence_engine.py` (6): both known real rows, the
+    absolute-value rule, INV-WEIGHT-01 (deactivating a weight changes the
+    denominator), graceful handling of a missing answer, and a profile
+    with no matching weights.
+  - `test_quality_engine.py` (6): both known real rows — row 2 is a
+    **losing** trade (`result=SL`, `pnl=-1.05` in the real Excel row)
+    with `TRADE QUALITY=85` (Grade B), the concrete proof of DI-03, not
+    just an assertion of it — the structural DI-03 signature-inspection
+    test, `respected_tp`'s `"N/A"`-scores-like-`"Yes"` rule, and
+    INV-WEIGHT-01.
+
+### Verification performed
+- `pytest tests/` — **102 passed** (16 new; 86 carried over from Sprints
+  0.1-2.3). No regressions.
+- `ruff format` / `ruff check` / `mypy app` — clean (122 source files).
+- Audit pass before commit: an AST-based scan (not just a text grep) of
+  every file under `app/modules/evaluation/` confirmed zero imports from
+  `configuration` or any other business module — the only cross-package
+  import anywhere in Evaluation's new code is `app.shared_kernel
+  .value_objects`, the one approved exception
+  (`TRADEOS_SYSTEM_ARCHITECTURE.md` §3.2); no duplication between
+  `confidence_engine.py` and `quality_engine.py` (both are thin callers
+  of the shared `scoring_core`/`grading` modules); no dead code, unused
+  imports, or TODO/FIXME/HACK markers in any file added this sprint.
+
+### Deferred
+- Execution, Market Context, and Bias engines — Sprint 3.2, per the
+  Master Plan's own split (Bias's signed normalization, DI-05, and Market
+  Context's independence from Bias's direction, DI-04, are each that
+  sprint's own named Exit Criteria).
+- The full `EvaluationEngine.evaluate() -> EvaluationSnapshot` orchestrator
+  producing all five scores together — only makes sense once all five
+  engines exist (Sprint 3.2's "Deliverables: all five engines complete").
+- Any wiring to real Configuration data (reading the published
+  `ScoringConfigurationVersion` from the database and translating it into
+  `EvaluationCriterion`/`EvaluationWeight`) — Sprint 3.2's
+  `PreviewEvaluation` Use Case, at the Application layer.
+- `POST /evaluation/preview` and any other HTTP surface — Sprint 3.2.
+- Any persistence (`evaluation_snapshots`/`evaluation_snapshot_breakdowns`)
+  — Trading owns those tables and does not exist yet (Phase 4).
