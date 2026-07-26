@@ -852,3 +852,152 @@ seeded 1:1, unchanged.
 - Any actual score computation (the Evaluation Engine reading this
   Configuration data) — Phase 3; this sprint only stores and serves
   criteria/weights/versions.
+
+## Sprint 2.2 — Catalogs Backend
+
+Phase 2 of the Implementation Master Plan: `CatalogEntry` CRUD and
+deactivation for all five kinds (Setup, Session, Strategy, Entry Trigger,
+Mistake Tag), seeded with the 37 real entries confirmed in
+`PROJECT_AUDIT.md` §3.1. Catalogs is a second API surface exposed from the
+same Configuration backend module (`TRADEOS_BACKEND_BLUEPRINT.md` §3.6),
+not a new top-level module — no new cross-module dependency was
+introduced.
+
+### Documented contradiction: Domain Model vs. API Specification/Backend Blueprint on reactivation
+
+`TRADEOS_DOMAIN_MODEL.md` §13.3 diagrams `CatalogEntry`'s lifecycle with a
+`reactivate` transition back from `Inactive` to `Active`:
+
+```
+( Active ) ──deactivate──▶ ( Inactive, still referenceable by historical Trades )
+    ▲                                │
+    └──────────── reactivate ────────┘
+```
+
+Neither `TRADEOS_API_SPECIFICATION.md` §6.7 nor `TRADEOS_BACKEND_BLUEPRINT.md`
+§4.8 name a `reactivate` endpoint or Use Case anywhere — both only ever
+name `deactivate`. This is a real contradiction between what the Domain
+Model's own state diagram claims is possible and what the interface
+contract (API Specification) and Use Case catalog (Backend Blueprint)
+actually expose.
+
+**Resolution (approved by the user):** implement only what the API
+Specification and Backend Blueprint define. `POST /catalogs/{id}/deactivate`
+exists; no `reactivate` endpoint or Use Case was added. No frozen document
+was modified to resolve this — per the project's standing rule, `/docs` is
+never edited. The Domain Model's diagrammed reactivation capability is
+treated as **documented future work**, pending a coordinated update across
+the Domain Model, API Specification, and Implementation Master Plan
+together (so the three documents describe the same lifecycle again) —
+not a decision this sprint is authorized to make on its own.
+
+### Added
+- `app/modules/configuration/domain/catalog_entry.py` — `CatalogEntry`
+  dataclass, `VALID_KINDS` (`setup`/`session`/`strategy`/`entry_trigger`/
+  `mistake_tag`, `TRADEOS_DATABASE_DESIGN.md` §6.8's check constraint).
+- `app/modules/configuration/application/` — `ListCatalogEntriesUseCase`,
+  `CreateCatalogEntryUseCase` (`(kind, name)` uniqueness, valid-kind
+  validation), `UpdateCatalogEntryUseCase` (renames only — `kind`,
+  `is_active`, `id`, and both timestamps are outside this Use Case's
+  signature entirely, not merely ignored at the API layer), and
+  `DeactivateCatalogEntryUseCase` (Domain Invariant DI-10; publishes
+  `CatalogEntryDeactivated` through the platform dispatcher — Create/
+  Update publish nothing, per Open Question BE-3, exactly mirroring
+  Sprint 2.1's `ScoringCriterion` Use Cases' event posture).
+- `app/modules/configuration/presentation/catalog_schemas.py`,
+  `catalogs_router.py` — the full Catalogs Module endpoint surface
+  (`TRADEOS_API_SPECIFICATION.md` §6.7: `GET`/`POST /catalogs`,
+  `PATCH`/`POST .../deactivate /catalogs/{id}`), mounted at `/catalogs`
+  (not `/configuration/...`) from this same backend module, behind
+  `get_current_user_id` like every other endpoint in this API.
+  `UpdateCatalogEntryRequest` has no `kind`/`is_active` field at all, so
+  there is no runtime check needed to reject them — they are structurally
+  unreachable from this endpoint.
+- `alembic/versions/0005_create_catalog_entries_table.py` — the
+  `catalog_entries` table (`TRADEOS_DATABASE_DESIGN.md` §6.8: PK `id`
+  UUID, `kind`/`name`/`is_active`/timestamps, unique `(kind, name)`, index
+  on `kind`) and an idempotent seed of all 37 real entries via
+  `INSERT ... ON CONFLICT (kind, name) DO NOTHING` — verified by directly
+  re-running the insert against an already-seeded database and confirming
+  zero rows changed and zero errors (see Verification).
+- `tests/configuration/test_catalog_entry_domain.py`,
+  `test_catalogs_flow.py` — 3 domain unit tests + 12 integration tests:
+  authentication required, create defaults to active, invalid `kind`
+  `422`s, duplicate `(kind, name)` `409`s (the Master Plan's own named
+  Exit Criteria), the same name is allowed across different kinds, list
+  filters by kind, rename via `PATCH`, `PATCH` cannot smuggle in `kind`/
+  `is_active` changes, renaming into a collision `409`s, deactivate
+  (including that it never hard-deletes — the entry remains listed, only
+  `is_active` flips), `CatalogEntryDeactivated` durably logged to
+  `platform.event_log`, and a dedicated test reproducing the exact
+  37-entry real seed through the API/Use Case path independently of the
+  migration, asserting all 37 are created active.
+
+### Modified
+- `app/modules/configuration/infrastructure/models.py`,
+  `repository.py` — added `CatalogEntryModel` and `CatalogEntryRepository`
+  to the existing files (matching how Sprint 2.1 grouped every
+  Configuration model/repository together), rather than new files, since
+  Catalogs is the same backend module, not a new one.
+- `app/main.py` — registers `catalogs_router` alongside
+  `configuration_router`.
+
+### Implementation notes (not architectural decisions)
+- **Seeded directly in the migration, no separate script** (unlike
+  Sprint 2.1's `scripts/seed_configuration.py`): `catalog_entries` has no
+  `created_by_user_id` column, and the Master Plan's Sprint 2.2 text names
+  no Phase-1 user-attribution dependency the way Sprint 2.1's did —
+  nothing requires an already-registered user to exist before this data
+  can be seeded, so the same migration-level pattern already used for
+  `engine_types`/`scoring_profiles` (Sprint 2.1) applies here for all 37
+  rows.
+- **Strategy names have the Excel's visual numbering prefix stripped**
+  ("1. Daily Open" → "Daily Open") — approved as a data-cleanup decision;
+  the numbering was a `⚙️ CONFIG` sheet ordering aid, never part of the
+  business name itself.
+- **Idempotency mechanism:** `INSERT ... ON CONFLICT (kind, name) DO
+  NOTHING` rather than a plain `bulk_insert` (Sprint 2.1's
+  `engine_types`/`scoring_profiles` seed, which is safe only because
+  Alembic guarantees a given migration body runs at most once per
+  database under normal operation) — the user explicitly asked for this
+  migration specifically to tolerate being re-run, verified directly (see
+  Verification).
+
+### Verification performed
+- `docker compose down -v && up -d` + `alembic upgrade head` from an empty
+  database — `0001 → 0002 → 0003 → 0004 → 0005` all applied cleanly in
+  sequence; `configuration.catalog_entries` confirmed at exactly 37 rows,
+  5 kinds (`setup`=8, `session`=6, `strategy`=4, `entry_trigger`=3,
+  `mistake_tag`=16), all `is_active = true`.
+- **Idempotency directly verified**, not merely asserted: re-executing the
+  seed's exact `INSERT ... ON CONFLICT` statement by hand against the
+  already-seeded database returned `INSERT 0 0` (zero rows affected, zero
+  errors) and the total row count remained 37.
+- `pytest tests/` — **85 passed** (15 new: 3 domain + 12 integration; 70
+  carried over from Sprints 0.1-2.1). No regressions.
+- `ruff format --check` / `ruff check` — clean.
+- `mypy app` — clean (112 source files).
+- Audit pass before commit: zero cross-module imports out of
+  `app/modules/configuration/` beyond what already existed after Sprint
+  2.1 (confirmed by direct grep — Catalogs added no new dependency, since
+  it lives inside the same module); the only cross-module import anywhere
+  in `app/modules/` remains Identity → Preferences' Sprint 1.2 factory
+  call; HTTP response shapes verified field-for-field against
+  `TRADEOS_API_SPECIFICATION.md` §6.7 for all 4 endpoints; no N+1 queries
+  (every Use Case issues at most one lookup query, no per-row loops); no
+  dead code, unused imports, or TODO/FIXME/HACK markers found in any file
+  added or modified this sprint.
+
+### Deferred
+- `reactivate` — see the documented contradiction above; pending a
+  coordinated Domain Model + API Specification + Master Plan update, not
+  decided unilaterally by this sprint.
+- Validating a `Trade`'s referenced Setup/Session/Strategy/Entry Trigger
+  actually exists and is active — Phase 4 (`Trade` does not exist yet).
+- Normalizing `Trade.mistakes` from free text to a real `trade_mistakes`
+  reference (`KDD-06`) — Phase 4, `TagMistake` (Sprint 4.3); this sprint
+  only seeds the canonical `mistake_tag` taxonomy Configuration already
+  owns (confirmed by `TRADEOS_DATABASE_DESIGN.md` §14, `DB-6, resolved`).
+- Catalogs frontend (Catalogs Management page) — Sprint 2.3.
+- Any metadata field beyond `kind`/`name`/`is_active` — `TRADEOS_DATABASE
+  _DESIGN.md` §6.8 states that is the complete confirmed shape today.

@@ -1,6 +1,6 @@
 """
 Configuration infrastructure: SQLAlchemy models for the `configuration`
-schema (TRADEOS_DATABASE_DESIGN.md §6.3-6.7).
+schema (TRADEOS_DATABASE_DESIGN.md §6.3-6.8).
 
 Typed `Mapped`/`mapped_column` style (SQLAlchemy 2.0), matching every prior
 module — required for mypy to type-check repository.py's round-trip into
@@ -106,4 +106,23 @@ class ScoringWeightModel(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class CatalogEntryModel(Base):
+    __tablename__ = "catalog_entries"
+    __table_args__ = {"schema": "configuration"}
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
     )

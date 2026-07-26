@@ -12,6 +12,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.configuration.domain.catalog_entry import CatalogEntry
 from app.modules.configuration.domain.engine_type import EngineType
 from app.modules.configuration.domain.scoring_configuration_version import (
     ScoringConfigurationVersion,
@@ -20,6 +21,7 @@ from app.modules.configuration.domain.scoring_criterion import ScoringCriterion
 from app.modules.configuration.domain.scoring_profile import ScoringProfile
 from app.modules.configuration.domain.scoring_weight import ScoringWeight
 from app.modules.configuration.infrastructure.models import (
+    CatalogEntryModel,
     EngineTypeModel,
     ScoringConfigurationVersionModel,
     ScoringCriterionModel,
@@ -224,6 +226,55 @@ class ScoringWeightRepository:
         row.is_active = weight.is_active
 
 
+class CatalogEntryRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_by_id(self, entry_id: uuid.UUID) -> CatalogEntry | None:
+        result = await self._session.execute(
+            select(CatalogEntryModel).where(CatalogEntryModel.id == entry_id)
+        )
+        row = result.scalar_one_or_none()
+        return _catalog_entry_to_domain(row) if row is not None else None
+
+    async def get_by_kind_and_name(self, kind: str, name: str) -> CatalogEntry | None:
+        result = await self._session.execute(
+            select(CatalogEntryModel).where(
+                CatalogEntryModel.kind == kind, CatalogEntryModel.name == name
+            )
+        )
+        row = result.scalar_one_or_none()
+        return _catalog_entry_to_domain(row) if row is not None else None
+
+    async def list_all(self, kind: str | None = None) -> list[CatalogEntry]:
+        query = select(CatalogEntryModel).order_by(CatalogEntryModel.kind, CatalogEntryModel.name)
+        if kind is not None:
+            query = query.where(CatalogEntryModel.kind == kind)
+        result = await self._session.execute(query)
+        return [_catalog_entry_to_domain(row) for row in result.scalars()]
+
+    async def add(self, entry: CatalogEntry) -> None:
+        self._session.add(
+            CatalogEntryModel(
+                id=entry.id,
+                kind=entry.kind,
+                name=entry.name,
+                is_active=entry.is_active,
+                created_at=entry.created_at,
+                updated_at=entry.updated_at,
+            )
+        )
+
+    async def update(self, entry: CatalogEntry) -> None:
+        result = await self._session.execute(
+            select(CatalogEntryModel).where(CatalogEntryModel.id == entry.id)
+        )
+        row = result.scalar_one()
+        row.name = entry.name
+        row.is_active = entry.is_active
+        row.updated_at = entry.updated_at
+
+
 def _engine_type_to_domain(row: EngineTypeModel) -> EngineType:
     return EngineType(
         code=row.code,
@@ -280,4 +331,15 @@ def _scoring_weight_to_domain(row: ScoringWeightModel) -> ScoringWeight:
         weight=float(row.weight),
         is_active=row.is_active,
         created_at=row.created_at,
+    )
+
+
+def _catalog_entry_to_domain(row: CatalogEntryModel) -> CatalogEntry:
+    return CatalogEntry(
+        id=row.id,
+        kind=row.kind,
+        name=row.name,
+        is_active=row.is_active,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )
