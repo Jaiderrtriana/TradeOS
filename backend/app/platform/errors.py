@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.platform.context import get_correlation_id
@@ -51,6 +52,13 @@ class UnauthenticatedError(AppError):
         super().__init__(status_code=401, code="UNAUTHENTICATED", message=message)
 
 
+class ConflictError(AppError):
+    """A request conflicts with existing data (e.g., a duplicate email)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(status_code=409, code="CONFLICT", message=message)
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """
     Registers handlers for route/Use-Case-raised errors (from Phase 1
@@ -66,6 +74,25 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content=build_error_envelope(exc.code, exc.message),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # Layer 1/2 validation (TRADEOS_API_SPECIFICATION.md §9) — shape and
+        # range failures FastAPI/Pydantic already caught before any Use
+        # Case ran. Reshaped into the one error envelope (§8) rather than
+        # FastAPI's own default error body.
+        details = [
+            {"field": ".".join(str(part) for part in error["loc"][1:]), "issue": error["msg"]}
+            for error in exc.errors()
+        ]
+        return JSONResponse(
+            status_code=422,
+            content=build_error_envelope(
+                "VALIDATION_FAILED", "Request validation failed.", details
+            ),
         )
 
     @app.exception_handler(Exception)

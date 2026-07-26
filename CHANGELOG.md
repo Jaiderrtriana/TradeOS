@@ -253,3 +253,152 @@ isolation, and unused Design System tokens, requested before commit:
   `pnpm build` after the token fix — all clean. Also re-ran
   `pnpm test:e2e` (2 passed) since `Sidebar.tsx` was touched, though not
   explicitly requested.
+
+## Sprint 1.1 — Identity Backend
+
+Phase 1 of the Implementation Master Plan. Scope: Register/Login/Refresh/Logout
+Use Cases (`TRADEOS_BACKEND_BLUEPRINT.md` §4.8) and the `identity.user_accounts`
+table (`TRADEOS_DATABASE_DESIGN.md` §6.1) — backend only; Preferences and the
+Login/Register frontend pages are Sprint 1.2, untouched here.
+
+### `identity.refresh_tokens` — a documented, approved extension of the frozen schema
+
+**This is the most consequential decision of this sprint, so it is
+recorded here in full.** `TRADEOS_API_SPECIFICATION.md` §4.3 requires
+refresh tokens to be:
+- issued alongside the access token at login,
+- **single-use** (exchanging one invalidates it and issues a new one —
+  rotation),
+- **revocable server-side** (to support `POST /auth/logout`).
+
+All three properties are impossible to implement without persisting
+refresh-token state somewhere. `TRADEOS_DATABASE_DESIGN.md` — the frozen,
+canonical schema document — defines only `identity.user_accounts` for the
+`identity` schema; it names no table for refresh tokens anywhere. This was
+identified as a genuine documentation omission (not a signal to build
+stateless refresh tokens) and confirmed explicitly by the user before any
+code was written.
+
+**Resolution:** `identity.refresh_tokens` was added via migration `0002`,
+following the exact conventions `TRADEOS_DATABASE_DESIGN.md` §6.1 already
+establishes for `user_accounts` (application-generated UUID primary key,
+`TIMESTAMPTZ` throughout, and — mirroring `password_hash`, never
+`password` — a `token_hash` column that stores only a hash of the token,
+never the raw secret):
+
+```
+identity.refresh_tokens
+  id            UUID PK
+  user_id       UUID NOT NULL REFERENCES identity.user_accounts(id)
+  token_hash    VARCHAR(255) NOT NULL UNIQUE
+  issued_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+  expires_at    TIMESTAMPTZ NOT NULL
+  revoked_at    TIMESTAMPTZ NULL
+```
+
+All refresh-token logic (hashing, rotation, revocation, the repository)
+lives entirely inside `app/modules/identity/` — no other module imports or
+knows about any of it.
+
+### Added
+- `app/modules/identity/domain/user_account.py`, `refresh_token.py` —
+  `UserAccount` (Domain Model §8.11) and `RefreshToken` (with `is_valid()`/
+  `revoke()` domain logic, unit-tested without a database).
+- `app/modules/identity/infrastructure/models.py` — `UserAccountModel`,
+  `RefreshTokenModel`, using SQLAlchemy 2.0's typed `Mapped`/`mapped_column`
+  style (see Implementation notes).
+- `app/modules/identity/infrastructure/password_hasher.py` — Argon2id
+  (`TRADEOS_TECHNICAL_STACK.md` §7.2).
+- `app/modules/identity/infrastructure/token_hasher.py` — SHA-256 for
+  refresh-token lookup hashing, deliberately not Argon2id (see
+  Implementation notes).
+- `app/modules/identity/infrastructure/repository.py` —
+  `UserAccountRepository`, `RefreshTokenRepository`.
+- `app/modules/identity/application/register.py`, `login.py`, `refresh.py`,
+  `logout.py`, `token_issuance.py` — the four Use Cases plus a shared
+  token-pair-issuance helper (used by both Login and Refresh, so issuance
+  is never duplicated).
+- `app/modules/identity/presentation/schemas.py`, `router.py` — the four
+  endpoints, matching `TRADEOS_API_SPECIFICATION.md` §6.1 field-for-field.
+- `alembic/versions/0002_create_identity_schema.py` — the `identity`
+  schema, both tables.
+- `tests/identity/` — unit tests (password hashing, token hashing,
+  `RefreshToken.is_valid()`) and `test_auth_flow.py`, an integration test
+  running the real FastAPI app (middleware included) against a real
+  Postgres instance: the full Register→Login→Refresh→Logout flow, the
+  Master Plan's own named regression test ("refresh-token rotation reuse
+  is rejected"), logout revocation, duplicate-email 409, identical
+  wrong-password/unknown-email 401, and password-never-in-response.
+
+### Modified
+- `app/platform/errors.py` — added `ConflictError` (409) and a
+  `RequestValidationError` handler (422, `VALIDATION_FAILED`, reshaping
+  FastAPI/Pydantic's own error body into the one envelope). Both are
+  generic, cross-cutting infrastructure — neither reveals anything about
+  refresh-token internals — needed now because Sprint 1.1 is the first
+  sprint with real request bodies and real business-conflict cases to
+  report.
+- `app/platform/config.py`, `.env.example` — added
+  `refresh_token_expire_days` (default 30 — see Implementation notes).
+- `app/main.py` — registers the Identity router at `/api/v1`; added
+  `/api/v1/auth/register`, `/login`, `/refresh` to
+  `AuthenticationMiddleware`'s `public_paths` (designed for exactly this
+  in Sprint 0.2) — `/auth/logout` deliberately excluded, since it requires
+  a valid access token.
+- `alembic/env.py`, `tests/conftest.py` — import Identity's models and
+  create the `identity` schema alongside `platform`.
+- `pyproject.toml` — `pydantic` now installed with its `email` extra
+  (`email-validator`), needed for `EmailStr`. Approved as dependency
+  support for already-mandatory Pydantic, not a new technology decision.
+
+### Implementation decisions (documented per your instructions, not silently made)
+- **Password minimum length: 8 characters.** `TRADEOS_API_SPECIFICATION.md`
+  §6.1 says "minimum length per Section 9 validation rules," but §9 never
+  states a concrete number. 8 is a temporary implementation default,
+  applied via Pydantic's `Field(min_length=8)` — **to be replaced once the
+  specification states a value explicitly**, not treated as a permanent
+  answer.
+- **Refresh token expiry: 30 days**, and **access token expiry: 30
+  minutes** (unchanged from Sprint 0.2). `TRADEOS_API_SPECIFICATION.md`
+  §4.1 requires a refresh token to be "longer-lived" than the access token
+  but gives no exact durations for either.
+- **Logout's interpretation:** `POST /auth/logout`'s contract
+  (`TRADEOS_API_SPECIFICATION.md` §6.1) has no request body — the only
+  data available is the authenticated caller's `user_id`. Since a user can
+  hold more than one active refresh token (multiple devices/tabs) and the
+  contract gives no way to identify one specific session, logout is
+  implemented as "revoke every currently-active refresh token for this
+  user." This is an interpretation, not a literal instruction — no frozen
+  document resolves this ambiguity either way.
+- **`token_hash` uses SHA-256, not Argon2id.** Argon2id is correct for
+  password *verification* (compare a plaintext against one known stored
+  hash) but unsuited to refresh-token *lookup* (`SELECT ... WHERE
+  token_hash = ?`), which requires a deterministic digest — Argon2id's
+  per-call random salt makes the same input hash differently every time.
+  SHA-256 (Python's stdlib `hashlib`, no new dependency) is the standard,
+  correct tool for this different problem.
+- **SQLAlchemy models use the typed `Mapped`/`mapped_column` style**
+  (SQLAlchemy 2.0), not the legacy `Column(...)` style Sprint 0.1's
+  `EventLog` model uses. This was a real `mypy` finding, not a stylistic
+  preference: the legacy style is untyped from mypy's perspective, and
+  `repository.py` reads rows straight back into strictly-typed domain
+  dataclasses, which the legacy style cannot satisfy. `EventLog` itself
+  was left unchanged (out of this sprint's scope; it never hits the same
+  typed round-trip).
+
+### Verification performed
+- `poetry lock` / `poetry install` — `email-validator` + `dnspython`
+  installed cleanly (transitive, via Pydantic's `email` extra).
+- `alembic upgrade head` — `0001 -> 0002` applied; both tables confirmed
+  via direct `psql` inspection (columns, PK, unique indexes, FK).
+- `pytest tests/` — **31 passed** (17 new: 8 integration + 9 unit; 14
+  carried over from Sprints 0.1–0.2). No regressions.
+- `ruff format --check` / `ruff check` — clean.
+- `mypy app` — clean, after the `Mapped`/`mapped_column` fix.
+
+### Deferred
+- `UserPreferences`, Login/Register frontend pages, Settings — Preferences
+  page (Sprint 1.2).
+- Roles/permissions, multi-session-aware logout, Domain Events for
+  Identity actions (`BE-1`, already registered as accepted-as-is by the
+  Master Plan) — none part of this sprint's approved scope.

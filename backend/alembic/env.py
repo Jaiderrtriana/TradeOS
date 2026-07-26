@@ -6,12 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
 # Import the shared declarative Base and every module's models so
-# Alembic's autogenerate sees the full, current metadata. Sprint 0.1 only
-# has app.platform.db.models (EventLog) — later phases add their own
-# module's models.py import here as each is built.
+# Alembic's autogenerate sees the full, current metadata. Each module's
+# models.py import is added here as the module is built.
 from app.platform.config import settings
 from app.platform.db.base import Base
 from app.platform.db import models as platform_models  # noqa: F401
+from app.modules.identity.infrastructure import models as identity_models  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)

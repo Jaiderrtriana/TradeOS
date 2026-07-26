@@ -22,5 +22,11 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 30
 
+    # TRADEOS_API_SPECIFICATION.md §4.1 requires a "longer-lived" refresh
+    # token but names no exact duration — 30 days is a documented
+    # implementation default (CHANGELOG.md, Sprint 1.1), not a value the
+    # spec states explicitly.
+    refresh_token_expire_days: int = 30
+
 
 settings = Settings()
