@@ -53,10 +53,29 @@ class UnauthenticatedError(AppError):
 
 
 class ConflictError(AppError):
-    """A request conflicts with existing data (e.g., a duplicate email)."""
+    """A request conflicts with existing data or state (e.g., a duplicate
+    email, or an action requiring `status = draft` attempted on a
+    published version)."""
 
     def __init__(self, message: str) -> None:
         super().__init__(status_code=409, code="CONFLICT", message=message)
+
+
+class NotFoundError(AppError):
+    """The referenced resource does not exist."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(status_code=404, code="NOT_FOUND", message=message)
+
+
+class UnprocessableEntityError(AppError):
+    """A request is well-formed but violates a business rule (e.g.,
+    max_value < min_value, or publishing a version that references an
+    inactive criterion) — distinct from Pydantic's own shape-validation
+    422s (VALIDATION_FAILED, above)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(status_code=422, code="UNPROCESSABLE_ENTITY", message=message)
 
 
 def register_exception_handlers(app: FastAPI) -> None:

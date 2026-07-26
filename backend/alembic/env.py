@@ -13,6 +13,7 @@ from app.platform.db.base import Base
 from app.platform.db import models as platform_models  # noqa: F401
 from app.modules.identity.infrastructure import models as identity_models  # noqa: F401
 from app.modules.preferences.infrastructure import models as preferences_models  # noqa: F401
+from app.modules.configuration.infrastructure import models as configuration_models  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)

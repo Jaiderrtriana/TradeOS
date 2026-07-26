@@ -606,3 +606,249 @@ Settings → Preferences page — the Master Plan's own "first fully vertical
   Decisions above).
 - Automating the E2E backend prerequisite in `playwright.config.ts` — left
   as documented manual setup.
+
+## Sprint 2.1 — Configuration Backend
+
+Phase 2 of the Implementation Master Plan, the first sprint of Configuration
+— per `TRADEOS_DOMAIN_MODEL.md` §4.3, "the most upstream Bounded Context":
+`ScoringCriterion`/`ScoringWeight`/`ScoringConfigurationVersion` CRUD,
+`PublishScoringConfigurationVersion`, and a first published configuration
+version seeded from real data. Catalogs (`TRADEOS_API_SPECIFICATION.md`
+§6.7) is Sprint 2.2, not touched here, even though it shares this same
+`configuration` Postgres schema (`TRADEOS_BACKEND_BLUEPRINT.md` §3.6).
+
+### The Bias Engine is deliberately excluded from this sprint's seed — read this first
+
+**This is the most consequential decision of this sprint.** The Master
+Plan's own Sprint 2.1 text calls for seeding "all five engines' criteria
+and weights." After extracting the actual source data from
+`legacy/Trading Journal v2.0 Stable.xlsx` (methodology and full findings
+below) and presenting it for review, the user approved seeding only
+**Confidence, Quality, Execution, and Market Context** with real data.
+`bias` is registered as a complete `engine_types` catalog row (migration
+`0004`) but **intentionally receives zero `ScoringCriterion`/
+`ScoringWeight` rows.**
+
+**Why:** the Excel proves Bias does not use the same generic
+weighted-criteria model the other four engines use, on three independent
+counts:
+1. **Bias's per-criterion scores are signed integers whose mapping from a
+   selected category to a point value depends on the trading profile**
+   (Day Trade vs. Swing) — e.g. the `DXY` criterion's "Strong Bullish"
+   selection scores `-3` under a Day Trade profile but `-4` under Swing
+   (`CHECKLIST` sheet, row 10's formula). `configuration.scoring_criteria
+   .category_map` (`TRADEOS_DATABASE_DESIGN.md` §6.5) is a single,
+   profile-independent JSONB column — it structurally cannot represent a
+   mapping that varies by profile.
+2. **Bias's final index divides by a fixed constant, not by the sum of
+   active weights.** The real formula (`CHECKLIST` row 54) is
+   `BIAS_INDEX = ROUND(GROSS_SCORE / 38 * 100)` for Day Trading/Scalping,
+   or `/ 45 * 100` for Swing — `38`/`45` are hardcoded constants, not a
+   sum of `scoring_weights.weight` rows. Domain Invariant INV-WEIGHT-01
+   ("divide by the sum of active weights") does not describe this
+   formula, and `configuration.scoring_weights` has no column to hold a
+   per-profile normalizing constant at all.
+3. **This directly contradicts `PROJECT_AUDIT.md` §3.2's own claim** that
+   the Evaluation Engine is generic and "autonormalizado dividiendo por la
+   suma de pesos activos, no una constante fija" (**"not a fixed
+   constant"**) — true for Confidence/Quality/Execution/Market Context
+   (all verified against their real formulas below), demonstrably false
+   for Bias.
+
+Forcing Bias's real behavior into `scoring_criteria`/`scoring_weights`/
+`category_map` as they exist today was explicitly rejected rather than
+worked around: any approximation (e.g., `weight = 1` per criterion, or
+collapsing the two profile-dependent category maps into one) would compute
+a **different score than the Excel actually produces**, and would have to
+be redone regardless once Sprint 3.2 makes the real design decision. No
+frozen document required modification to implement this exclusion — the
+Domain Model, Database Design, Backend Blueprint, and API Specification
+all continue to describe the generic five-engine model exactly as before;
+only this sprint's own data-seeding scope was narrowed, and that scope
+change lives here and in this module's own code comments
+(`app/modules/configuration/domain/engine_type.py`,
+`scripts/seed_configuration.py`'s module docstring), not in any `/docs`
+file.
+
+**Registered technical debt for Sprint 3.2** (which the Master Plan
+already assigns "Bias's signed normalization" to): the Bias Engine's data
+model is undecided and must be designed before Bias can be seeded or
+computed. Candidate directions, evaluated but not decided here: extending
+`category_map` with a profile dimension; a Bias-specific table separate
+from `scoring_criteria`/`scoring_weights`; or modeling Bias's aggregation
+entirely outside the generic Configuration schema. No design decision is
+made by this sprint — only the fact that one is needed, and why.
+
+### Excel data extraction — methodology and provenance
+
+Since neither `PROJECT_AUDIT.md` §3.1/§6 (cited by the Master Plan) nor any
+other frozen document contains the literal criteria names or numeric
+weights, the real data was extracted directly from
+`legacy/Trading Journal v2.0 Stable.xlsx` using `openpyxl`, installed only
+into a throwaway virtualenv outside the project
+(`AppData/.../scratchpad/xlsx_extract/.venv`) — **`openpyxl` is not a
+dependency of this project**, not even a dev-dependency; `pyproject.toml`
+is unchanged. The extraction was presented in full to the user (every
+engine type, profile, criterion, weight, category-lookup table, and
+inconsistency found) and approved before any seed code was written.
+
+Sources read: the `⚙️ CONFIG` sheet's weight tables (rows 5-23), grade
+thresholds (row 25, confirmed to apply only to Confidence and Quality —
+Execution and Market Context have no letter grade in the Excel), 8
+category-lookup tables (rows 31-76), and the Market Context Engine's two
+normalized tables (rows 128-258: 30 criteria x 3 profiles = 90 weight
+combinations, `Score_Normalizado`/`Contribución` columns discarded as
+worked-example output, not configuration); the `📒 Trades` sheet's actual
+`IF(...)`/`VLOOKUP(...)` formulas for the TRADE CONFIDENCE, TRADE QUALITY,
+and EXECUTION SCORE columns (which additionally confirmed 5 of Quality's 6
+criteria — Followed Plan, Valid Setup, Entered at Planned Level, Respected
+Stop, Respected Risk Mgmt — are simple `Yes=100/No=0` binaries with no
+separate lookup table in `⚙️ CONFIG`, resolved by reading the real formula
+rather than guessing); and that sheet's data-validation dropdown lists,
+which confirmed the exact category options in practice.
+
+**Confidence/Quality/Execution weights are profile-independent in the
+Excel** (a single global weight per criterion, not one per Day
+Trading/Swing/Scalping). Since `scoring_weights.profile_code` is a
+required column in the frozen schema, each of those weights is seeded
+identically across all three profiles — a lossless, faithful translation
+(the real weight never varies by profile; replicating one true value three
+times changes nothing about what gets computed), not invented data.
+Market Context's weights are genuinely per-profile in the Excel and are
+seeded 1:1, unchanged.
+
+### Added
+- `app/modules/configuration/domain/` — `EngineType`, `ScoringProfile`,
+  `ScoringCriterion`, `ScoringConfigurationVersion` (with `DRAFT`/
+  `PUBLISHED`/`SUPERSEDED` status constants), `ScoringWeight` dataclasses
+  (`TRADEOS_DOMAIN_MODEL.md` §8.4-8.6).
+- `app/modules/configuration/infrastructure/models.py`, `repository.py` —
+  typed `Mapped`/`mapped_column` models for all 5 tables
+  (`TRADEOS_DATABASE_DESIGN.md` §6.3-6.7) and one repository per
+  aggregate/table.
+- `app/modules/configuration/application/` — 11 Use Cases:
+  `ListEngineTypesUseCase`, `ListScoringProfilesUseCase`,
+  `CreateScoringProfileUseCase`, `ListScoringCriteriaUseCase`,
+  `CreateScoringCriterionUseCase`, `UpdateScoringCriterionUseCase`,
+  `DeactivateScoringCriterionUseCase`,
+  `ListScoringConfigurationVersionsUseCase`,
+  `CreateDraftConfigurationVersionUseCase` (copies forward the
+  currently-published version's weights, per §6.6's own "implementation
+  convenience" framing), `UpdateDraftWeightsUseCase` (add-or-update,
+  `409` off a non-draft version), `PublishScoringConfigurationVersionUseCase`
+  (`TRADEOS_BACKEND_BLUEPRINT.md` §4.4 in full: validates every active
+  weight's criterion is itself active, flips the target to `published` and
+  the prior published version to `superseded` in the same transaction,
+  publishes `ScoringConfigurationChanged` through the platform dispatcher
+  — the first Use Case in this codebase to actually publish a Domain
+  Event, Sprint 0.1's dispatcher having stood unused until now).
+- `app/modules/configuration/presentation/schemas.py`, `router.py` — the
+  full Configuration Module endpoint surface
+  (`TRADEOS_API_SPECIFICATION.md` §6.6): engine-types, scoring-profiles,
+  scoring-criteria, and versions — 11 endpoints, all behind
+  `get_current_user_id` (§4.5-4.6: Configuration resources are global to
+  the single user today, not yet per-user owned, but still sit behind the
+  same bearer-token requirement as every other endpoint in this API).
+- `alembic/versions/0004_create_configuration_schema.py` — the
+  `configuration` schema, all 5 tables, the partial unique index on
+  `engine_types.is_signed` (§6.3.1: at most one active signed engine,
+  Domain Invariant DI-05), and a data seed for `engine_types` (5 rows,
+  including `bias`) and `scoring_profiles` (3 rows) — reference data with
+  no `user_id` attribution requirement, unlike the first
+  `ScoringConfigurationVersion` (see below).
+- `backend/scripts/seed_configuration.py` — an idempotent, manually-run
+  script that seeds the real Confidence/Quality/Execution/Market Context
+  criteria and weights and publishes the first `ScoringConfigurationVersion`,
+  using the same Application-layer Use Cases the HTTP API uses (never raw
+  SQL), per the Master Plan's own "Dependencies: Phase 1 (a `user_id` must
+  exist to attribute the seed action)." Requires `--user-id`; re-running it
+  is a no-op once a published version exists. Run and verified against
+  both the persistent dev database and a freshly-migrated one (see
+  Verification).
+- `app/platform/errors.py` — added `NotFoundError` (404) and
+  `UnprocessableEntityError` (422), generic cross-cutting error types
+  needed by Configuration's Use Cases (e.g. `404` for an unknown
+  criterion/version, `422` for a business-rule violation distinct from
+  Pydantic's own shape-validation `422`s) — reusable by any future module,
+  not Configuration-specific.
+- `tests/configuration/` — 5 domain unit tests + 19 integration tests
+  (engine types/profiles seeded correctly, `bias` is the one signed
+  engine, authentication required, profile/criterion CRUD and their `409`/
+  `422` failure cases, partial-update preserves untouched fields,
+  deactivate, draft-only weight mutability, publishing a non-draft `409`s,
+  publishing with an inactive-criterion-referencing weight `422`s, and the
+  Master Plan's own named Exit Criteria test: publishing a second draft
+  correctly supersedes the first, with exactly one `published` version
+  provable at any time).
+
+### Modified
+- `alembic/env.py`, `tests/conftest.py` — import Configuration's models;
+  create the `configuration` schema and seed the same `engine_types`/
+  `scoring_profiles` reference rows the migration seeds (`Base.metadata
+  .create_all` only creates tables, it does not run a migration's own data
+  seed) — guarded by an existence check, not a bare insert, since
+  `postgres_container` is session-scoped and this fixture runs once per
+  test function against the same already-seeded database.
+- `app/main.py` — registers `configuration_router`.
+
+### Implementation notes (not architectural decisions)
+- **N+1 avoided in `PublishScoringConfigurationVersionUseCase`:** the
+  first version validated every active weight's criterion with one query
+  per weight; changed to one `list_all()` call building an in-memory set,
+  since a single version can carry dozens of weights (Market Context alone
+  seeds 90). Found and fixed during this sprint's own pre-commit audit,
+  before any regression test was needed.
+- **`scripts/seed_configuration.py` reaches into Identity's
+  `UserAccountRepository` directly** (to validate `--user-id` refers to a
+  real user before seeding). This is a bounded, deliberate exception to
+  `TRADEOS_SYSTEM_ARCHITECTURE.md` §3.3's module-boundary rule: the rule
+  governs *modules* importing each other's infrastructure layer; a
+  standalone, manually-run operational script outside `app/modules/` is
+  tooling, not a module, the same category as Alembic migrations already
+  crossing schema boundaries at the DB level (e.g. `scoring_configuration
+  _versions.created_by_user_id` already references `identity.user_accounts
+  .id`). Flagged here for visibility rather than silently exercised.
+- **`ScoringCriterion.id`/`EngineType.code`-prefixed criterion IDs**
+  (`confidence.htf_alignment`, `market_context.htf_align`, etc.): the
+  Excel independently uses "HTF Alignment" as a criterion name in *both*
+  Confidence (category-mapped) and Market Context (numeric-range) — a
+  literal `HTF_ALIGN` id, `TRADEOS_DATABASE_DESIGN.md` §2.4.1's own
+  example, would collide between engines. Every seeded criterion id is
+  namespaced `<engine_type_code>.<snake_case_name>` to guarantee
+  uniqueness while staying human-legible, per `scoring_criteria.id`'s
+  documented purpose (stable, human-assigned, INV-CRITERION-01).
+
+### Verification performed
+- `docker compose down -v && up -d` + `alembic upgrade head` from an empty
+  database — `0001 → 0002 → 0003 → 0004` all applied cleanly in sequence;
+  repeated twice (once against the persistent dev database, once against
+  a freshly torn-down-and-recreated one) together with a full run of
+  `scripts/seed_configuration.py` against each, confirming idempotency
+  (a second run against the already-seeded dev database correctly printed
+  "nothing to do" and created no duplicate rows).
+- `pytest tests/` — **70 passed** (24 new: 5 domain + 19 integration; 46
+  carried over from Sprints 0.1-1.2). No regressions.
+- `ruff format --check` / `ruff check` — clean.
+- `mypy app` — clean (105 source files).
+- Audit pass before commit: zero cross-module imports out of
+  `app/modules/configuration/` (confirmed by direct grep — Configuration
+  depends on nothing, exactly `TRADEOS_BACKEND_BLUEPRINT.md` §3.5's "the
+  most upstream context"); the only pre-existing cross-module import
+  anywhere in `app/modules/` remains Identity → Preferences' Sprint 1.2
+  factory call; HTTP response shapes verified field-for-field against
+  `TRADEOS_API_SPECIFICATION.md` §6.6 for all 11 endpoints; no dead code,
+  unused imports, or TODO/FIXME/HACK markers found in any file added or
+  modified this sprint.
+
+### Deferred
+- Catalogs (`CatalogEntry` CRUD, all five kinds) — Sprint 2.2, per the
+  Master Plan's own split, despite sharing this sprint's `configuration`
+  schema.
+- The Bias Engine's data model, and therefore its `ScoringCriterion`/
+  `ScoringWeight` seed data — Sprint 3.2 (see above; registered as
+  explicit technical debt, not silently skipped).
+- Configuration & Catalogs frontend (Scoring Versions page, Catalogs
+  Management page) — Sprint 2.3.
+- Any actual score computation (the Evaluation Engine reading this
+  Configuration data) — Phase 3; this sprint only stores and serves
+  criteria/weights/versions.

@@ -3,8 +3,9 @@ TradeOS backend — entry point.
 
 Sprint 1.1 added Identity's four Authentication endpoints
 (TRADEOS_API_SPECIFICATION.md §6.1). Sprint 1.2 adds Preferences'
-GET/PATCH (§6.3). Every other module's presentation layer is still empty
-scaffolding.
+GET/PATCH (§6.3). Sprint 2.1 adds Configuration's full endpoint surface
+(§6.6) — Catalogs (§6.7) remains scaffolding, deferred to Sprint 2.2. Every
+other module's presentation layer is still empty scaffolding.
 """
 
 from contextlib import asynccontextmanager
@@ -12,6 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.modules.configuration.presentation.router import router as configuration_router
 from app.modules.identity.presentation.router import router as identity_router
 from app.modules.preferences.presentation.router import router as preferences_router
 from app.platform.config import settings
@@ -55,6 +57,7 @@ app = FastAPI(
 register_exception_handlers(app)
 app.include_router(identity_router, prefix="/api/v1")
 app.include_router(preferences_router, prefix="/api/v1")
+app.include_router(configuration_router, prefix="/api/v1")
 
 # Middleware order matters: Starlette runs the LAST-added middleware
 # OUTERMOST (first on the way in). Order, outermost to innermost:
