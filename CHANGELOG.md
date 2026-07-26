@@ -1347,6 +1347,173 @@ on the same value.
   of the shared `scoring_core`/`grading` modules); no dead code, unused
   imports, or TODO/FIXME/HACK markers in any file added this sprint.
 
+## Sprint 3.2 — Execution, Market Context & Bias Engines; Evaluation Preview
+
+Phase 3's second sprint: completes the `EvaluationEngine` with the
+remaining three instances of the generic core — Execution, Market
+Context, and Bias — assembles all five into one `EvaluationResult`
+orchestrator, and wires the whole thing to real, persisted Configuration
+data for the first time via `PreviewEvaluationUseCase` and
+`POST /evaluation/preview` (`TRADEOS_API_SPECIFICATION.md` §6.5). Every
+engine — Confidence, Quality, Execution, Market Context, Bias — is now a
+thin caller of the exact same `scoring_core.compute_weighted_score`, with
+zero engine-specific branching inside the shared core itself.
+
+### Bias Engine — Camino A: the binding Product Bible text wins over the raw Excel
+
+Sprint 2.1 documented that the real Excel's `BIAS_INDEX` formula
+(`ROUND(GROSS_SCORE / 38 * 100)` for Day Trading/Scalping, `/45` for
+Swing, plus a category-to-point mapping that itself changes by profile)
+does not fit the generic weighted-average model the other four engines
+use. You approved **Camino A**: build Bias on the exact same, unmodified
+`scoring_core.compute_weighted_score` as every other engine, using signed
+category-map values instead of introducing an architectural exception —
+grounded in `TRADEOS_PRODUCT_BIBLE.md` §8.2, explicitly marked "the
+single most important part of this document... binding on every future
+technical document," which states the self-normalizing,
+sum-of-active-weights aggregation applies to all five engines and
+separates Bias from the rest only on the *sign* of its normalized values.
+`scoring_core.py` needed **zero Bias-specific changes** — every real Bias
+criterion in the Excel is categorical, never a raw numeric range, so
+`normalize()`'s min/max rescale path (the one place a signed range could
+have been mishandled — it unconditionally rescales to a positive 0-100
+span) is never exercised by Bias. The real Excel's fixed-constant
+divisor and profile-dependent category maps remain documented, known
+technical debt (Sprint 2.1, reaffirmed here), not implemented. Domain
+Invariant DI-05 (Bias never derives a Grade) is enforced structurally —
+`score_bias` inlines its own finalization (`Score(round_half_up(...),
+grade=None)`) rather than reusing `grading.finalize_score`, so it cannot
+acquire a Grade by accident, matching `TRADEOS_DATABASE_DESIGN.md` §6.12
+(no `bias_grade` column).
+
+**No real Bias data (criteria, category maps, weights) was seeded this
+sprint.** Per your explicit instruction, a separate data-proposal
+document is being prepared for review before any Bias seed code is
+written — the domain engine is complete and tested against synthetic
+fixtures only (`bias.test_macro_signal`, `bias.test_trend_signal`,
+deliberately never resembling real Excel criterion names).
+
+### Discovered mid-sprint: Execution/Market Context grade thresholds have no Excel source
+
+While wiring `execution_engine.py`/`market_context_engine.py` to reuse
+`grading.finalize_score` (so their Scores carry a Grade, per
+`TRADEOS_DATABASE_DESIGN.md` §6.12's `execution_grade`/
+`market_context_grade` columns), found that this silently assumed the
+same A+/A/B/C/D thresholds (95/90/80/70) Sprint 2.1 extracted and scoped
+explicitly to Confidence/Quality only — the real Excel's `⚙️ CONFIG`
+sheet (row 25) defines no grade thresholds for Execution or Market
+Context at all (see Sprint 2.1's own CHANGELOG entry). Flagged to you
+before proceeding rather than shipping the assumption silently. **Your
+decision:** reuse Confidence/Quality's thresholds for both, as a
+conscious architectural decision, not an Excel replication — every
+non-signed engine (Confidence, Quality, Execution, Market Context) is
+modeled uniformly as Score + Grade via the one shared `finalize_score`,
+with no grade-less variant introduced for any two of them; Bias remains
+the sole signed exception. Replaceable without an architecture change if
+a future Product Bible/Excel revision defines engine-specific thresholds.
+Documented in `grading.py`'s module docstring and each engine's own
+docstring, plus `shared_kernel/value_objects.py`'s `Score.grade` comment
+(updated — it previously, incorrectly, implied Execution/Market Context
+were gradeless).
+
+### `checklist_answers` source_field → criterion_id translation, confined to the Application layer
+
+`POST /evaluation/preview`'s request body keys `checklist_answers` by a
+criterion's `source_field` (API Specification line 190), but Sprint 3.1's
+domain engines work exclusively with the stable `criterion_id`
+(INV-CRITERION-01). Per your instruction, that translation happens
+exactly once, inside `PreviewEvaluationUseCase` (Application layer) —
+Sprint 3.1's already-shipped, already-tested domain layer is untouched.
+
+### Configuration cross-module factories, mirroring the Sprint 1.2 Preferences pattern
+
+Four `build_*` factories added to Configuration's own Application layer
+so `PreviewEvaluationUseCase` can read Configuration data without ever
+importing its domain or infrastructure directly
+(`TRADEOS_SYSTEM_ARCHITECTURE.md` §3.3, Forbidden Dependencies) —
+`build_get_configuration_version_use_case` (backing a genuinely new
+`GetConfigurationVersionUseCase`, since no endpoint previously needed a
+single-version lookup), `build_list_scoring_criteria_use_case`,
+`build_list_configuration_weights_use_case`,
+`build_list_scoring_profiles_use_case`. Each constructs its Use Case with
+a single `Repository(session)` argument, exactly matching
+`build_create_default_preferences_use_case` (Sprint 1.2).
+
+### N+1 avoidance
+
+`PreviewEvaluationUseCase` performs exactly three reads regardless of how
+many engines or criteria are involved: scoring profiles once (validating
+`scoring_profile`), scoring criteria once, unfiltered (grouped by
+`engine_type_code` locally in Python), and weights for the resolved
+version once (matched to each criterion's engine via an
+id → engine_type_code map built while grouping criteria) — never one
+query per engine. A published version's own publish-time validation
+(Sprint 2.1: every active weight must reference an active criterion) is
+relied upon rather than re-filtering by `criterion.is_active` here.
+
+### Added
+- `app/modules/evaluation/domain/execution_engine.py`,
+  `market_context_engine.py`, `bias_engine.py` — the third, fourth, and
+  fifth instances of the generic core. Execution: four real Sprint 2.1
+  category-mapped criteria, no engine-specific transform. Market Context:
+  the first real exercise of `scoring_core.normalize()`'s min/max
+  rescaling path (30 real numeric criteria, no `category_map`); DI-04
+  (independent of Bias's direction) enforced structurally via signature
+  inspection, exactly like DI-03 for Quality. Bias: see above.
+- `app/modules/evaluation/domain/evaluation_result.py` — `EngineInput`
+  (one engine's own criteria/weights pair), `EngineResult`
+  (score+breakdown), `EvaluationResult` (all five `EngineResult`s),
+  mirroring `TRADEOS_API_SPECIFICATION.md` §6.5's response shape exactly.
+- `app/modules/evaluation/domain/evaluation_engine.py` — `evaluate()`,
+  the orchestrator composing all five engines into one `EvaluationResult`.
+  Zero infrastructure dependencies — every `EngineInput` is supplied by
+  the caller.
+- `app/modules/configuration/application/get_configuration_version.py` —
+  `GetConfigurationVersionUseCase` (new) + its `build_*` factory.
+- `build_*` factories added to `list_scoring_criteria.py`,
+  `list_configuration_weights.py`, `list_scoring_profiles.py`.
+- `app/modules/evaluation/application/preview_evaluation.py` —
+  `PreviewEvaluationUseCase`: resolves the configuration version,
+  validates `scoring_profile`, fetches criteria/weights once each, does
+  the source_field → criterion_id translation, calls `evaluate()`. No
+  persistence, no transaction, no event
+  (`TRADEOS_BACKEND_BLUEPRINT.md` §4.5).
+- `app/modules/evaluation/presentation/schemas.py`, `router.py` —
+  `POST /evaluation/preview`. Response mirrors an `EvaluationSnapshot`
+  exactly; `bias` carries no `grade` key at all (not even `null`),
+  matching §6.5's documented shape. Wired into `app/main.py`.
+- `tests/evaluation/` — 19 new tests: `test_execution_engine.py` (2, real
+  Excel-verified rows, extracted via a new scratchpad script
+  `07_extract_execution_score.py` against Sprint 2.1's isolated,
+  non-dependency `openpyxl` venv), `test_market_context_engine.py` (3,
+  including DI-04's structural test), `test_bias_engine.py` (7,
+  synthetic fixtures only, DI-05/DI-08), `test_evaluation_engine.py` (2,
+  orchestrator-level DI-05/DI-08 across all five engines at once),
+  `test_preview_evaluation_flow.py` (5, integration — the first tests
+  exercising Evaluation against a real database, full HTTP round-trip
+  through the real FastAPI app).
+
+### Verification performed
+- `pytest` (full suite) — **121 passed** (19 new; 102 carried over).
+- `ruff format` / `ruff check` / `mypy` — clean (mypy's only two findings
+  are pre-existing, unrelated to this sprint: a Starlette typing mismatch
+  in `test_correlation_id_middleware.py` and a missing `types-python-jose`
+  stub package, both present before Sprint 3.2).
+- No schema changes this sprint — no new Alembic migration; `git status`
+  confirms zero touched files under `infrastructure/models.py` or
+  `alembic/versions/`.
+- Special audit (per your request): zero forbidden cross-module imports
+  in either direction between `evaluation` and `configuration` (grep
+  confirmed no `from app.modules.configuration.(domain|infrastructure)`
+  in Evaluation, and no `from app.modules.evaluation` in Configuration);
+  zero duplication of the weighted-scoring algorithm across all five
+  engines (each is a thin wrapper around the one shared
+  `compute_weighted_score`); `PreviewEvaluationUseCase` confirmed at
+  exactly three DB reads regardless of engine/criterion count (see N+1
+  avoidance above); this repository has no dedicated ADR directory —
+  architectural decisions are tracked here, in this CHANGELOG, against
+  the frozen canonical documents.
+
 ### Deferred
 - Execution, Market Context, and Bias engines — Sprint 3.2, per the
   Master Plan's own split (Bias's signed normalization, DI-05, and Market

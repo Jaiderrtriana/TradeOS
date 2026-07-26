@@ -24,8 +24,9 @@ class Grade(str, Enum):
 @dataclass(frozen=True)
 class Score:
     value: float
-    # None for engines with no letter grade at all (Execution, Market
-    # Context per the real Excel's own grade-threshold scope; Bias, which
-    # is signed and has no `bias_grade` column, TRADEOS_DATABASE_DESIGN.md
-    # §6.12) — not every Score has a Grade, but every Grade has a Score.
+    # None only for Bias (signed, no `bias_grade` column,
+    # TRADEOS_DATABASE_DESIGN.md §6.12) — every other engine (Confidence,
+    # Quality, Execution, Market Context) always derives a Grade, per the
+    # Sprint 3.2 decision documented in evaluation/domain/grading.py. Not
+    # every Score has a Grade, but every Grade has a Score.
     grade: Grade | None = None

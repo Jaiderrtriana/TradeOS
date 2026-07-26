@@ -6,12 +6,24 @@ tail in both `confidence_engine.py` and `quality_engine.py`.
 Thresholds are the real values extracted from and approved against
 `legacy/Trading Journal v2.0 Stable.xlsx`'s `⚙️ CONFIG` sheet (row 25,
 "🏆 UMBRALES DE GRADO", already used to seed Sprint 2.1's Confidence/
-Quality data) — applicable to Confidence and Quality only, per that same
-sheet's own scope ("aplica a Confidence y Quality"; Execution and Market
-Context have no letter grade in the Excel, and Bias, being signed, has
-none either, TRADEOS_DATABASE_DESIGN.md §6.12). No frozen document models
-these as configurable data, so they are hardcoded domain constants here,
-not read from any table.
+Quality data). The Excel itself scopes that row to Confidence and Quality
+only (Execution and Market Context have no letter grade in the raw
+workbook), but `TRADEOS_DATABASE_DESIGN.md` §6.12 provisions
+`execution_grade`/`market_context_grade` columns on the canonical schema
+alongside `confidence_grade`/`quality_grade` — Bias is the schema's one
+documented exception (signed, no `bias_grade` column at all).
+
+Sprint 3.2 decision (explicit, not a silent Excel replication): every
+non-signed engine — Confidence, Quality, Execution, Market Context — is
+modeled uniformly as Score + Grade, and `finalize_score` is reused
+unchanged for all four rather than introducing a grade-less variant for
+two of them. Since no frozen document defines separate thresholds for
+Execution/Market Context, these same Confidence/Quality thresholds are
+reused for consistency of the canonical domain model, not because the
+Excel computes it that way. Replaceable without an architecture change if
+a future Product Bible/Excel revision defines engine-specific thresholds.
+No frozen document models these as configurable data, so they are
+hardcoded domain constants here, not read from any table.
 """
 
 from app.modules.evaluation.domain.rounding import round_half_up

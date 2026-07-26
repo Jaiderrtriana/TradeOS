@@ -12,6 +12,8 @@ CHANGELOG.md, Sprint 2.3, for the full write-up.
 
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.modules.configuration.domain.scoring_weight import ScoringWeight
 from app.modules.configuration.infrastructure.repository import ScoringWeightRepository
 
@@ -22,3 +24,12 @@ class ListConfigurationWeightsUseCase:
 
     async def execute(self, configuration_version_id: UUID) -> list[ScoringWeight]:
         return await self._repository.list_by_version(configuration_version_id)
+
+
+def build_list_configuration_weights_use_case(
+    session: AsyncSession,
+) -> ListConfigurationWeightsUseCase:
+    """Factory exposed for Evaluation's Application layer (Sprint 3.2) —
+    same cross-module pattern as Preferences' `build_create_default_preferences_use_case`
+    (Sprint 1.2)."""
+    return ListConfigurationWeightsUseCase(ScoringWeightRepository(session))
