@@ -131,3 +131,125 @@ roles, and every business module (Phase 1+).
 - Health endpoint — confirmed out of scope; `TRADEOS_BACKEND_BLUEPRINT.md`
   §11 registers it as Open Question BE-7, explicitly deferred to
   Sprint 9.1 by the Master Plan.
+
+## Sprint 0.3 — Frontend Application Shell
+
+Phase 0 of the Implementation Master Plan. Scope: routing skeleton, the API
+client layer, the standard error-envelope handling path, and design system
+tokens (dark theme only) — `TRADEOS_FRONTEND_BLUEPRINT.md` §2.2, §2.8, §14.
+No feature logic; `frontend/` was built from zero (confirmed empty at
+sprint start).
+
+### Added
+- Frontend project bootstrap (Vite, React 18, TypeScript strict, Tailwind
+  CSS fully configured, ESLint + Prettier) per `TRADEOS_TECHNICAL_STACK.md`
+  §6, §9, §11.
+- `src/design-system/tokens.css` + `tailwind.config.ts` — dark-theme-only
+  color/elevation tokens (`TRADEOS_FRONTEND_BLUEPRINT.md` §14), consumed
+  by Tailwind's config rather than hardcoded per component.
+- `src/api/errors.ts` (`ApiError`, `parseApiError`, `networkError`) +
+  `src/api/client.ts` — the API client layer
+  (`TRADEOS_FRONTEND_BLUEPRINT.md` §2.2); only the generic request
+  primitive and error normalization exist, no concrete endpoint function
+  yet.
+- `src/components/ErrorBanner.tsx` + `src/components/ErrorContext.tsx` —
+  the one shared error path (§2.8, §17): any future feature module reports
+  a failure via `useErrorReporter()`, rendered from exactly one place.
+- `src/layout/AppShell.tsx`, `Sidebar.tsx`, `navigation.ts` — sidebar
+  grouped Workspace/Analytics/Configuration per §4.1, including the
+  visually-present-but-inactive "AI Coach" entry §4.1 explicitly requires.
+- `src/router.tsx` + one placeholder page per confirmed frontend module
+  (`TRADEOS_FRONTEND_BLUEPRINT.md` §3): Authentication, Dashboard, Trading,
+  Evaluation, Configuration, Playbook, Mistakes, Statistics, Journal,
+  Settings — 10 modules, one route each. Authentication has no sidebar
+  entry (§5.7) and renders outside `AppShell`.
+- `src/api/errors.test.ts` — Vitest unit tests for `parseApiError`'s
+  normalization logic (pure functions, no component rendering).
+- `e2e/error-banner.spec.ts` + `playwright.config.ts` — one Playwright E2E
+  test proving the Exit Criteria: a simulated error renders through
+  `ErrorBanner` identically from two different routes.
+- `src/test-support/errorSimulation.ts` — a dev/test-only hook
+  (`window.__tradeosSimulateApiError`) the E2E test calls, since no real
+  endpoint exists yet to trigger a genuine failure. Guarded by
+  `import.meta.env.DEV`, tree-shaken out of the production build.
+
+### Implementation notes (not architectural decisions)
+- **`@testing-library/react` was not added**, per your explicit decision:
+  Vitest covers `parseApiError`'s pure logic only; Playwright (already in
+  the Technical Stack) covers the actual rendering proof.
+- **TanStack Query was not installed** — confirmed out of scope; arrives
+  with the first feature that consumes real server data (Phase 1+).
+- **`@types/node` added** (dev-only) — `playwright.config.ts` reads
+  `process.env.CI`, which needs Node's type definitions to type-check.
+  Node.js itself is already in the Technical Stack (§9); this is only its
+  types, not a new runtime dependency.
+- **pnpm's build-script approval** (`pnpm-workspace.yaml`,
+  `allowBuilds: { esbuild: true }`) — pnpm 11 blocks postinstall scripts
+  by default; `esbuild` is Vite's own transitive dependency, not a new
+  technology, so its build script was explicitly allowlisted rather than
+  silently skipped (which would leave Vite partially broken).
+- **Settings' sidebar placement** — `TRADEOS_FRONTEND_BLUEPRINT.md` §4.1
+  doesn't explicitly group "Settings" among Workspace/Analytics/
+  Configuration, nor does it say "no sidebar entry" the way it does for
+  Login/Register (§5.7). Given every other confirmed module in §4.1 does
+  get a sidebar entry, Settings was placed as its own minimal group rather
+  than omitted — a reasonable reading, not an explicit document
+  instruction, flagged here for visibility.
+
+### Verification performed
+- `pnpm install` — 438 packages installed cleanly (after allowlisting
+  `esbuild`'s build script).
+- `pnpm typecheck` (`tsc -b --noEmit`) — clean, after adding `@types/node`.
+- `pnpm lint` (ESLint) — clean, after fixing one `react/no-unescaped-entities`
+  violation in `PlaceholderPage.tsx`.
+- `pnpm format:check` (Prettier) — clean.
+- `pnpm test` (Vitest) — 5 passed.
+- `pnpm build` (`tsc -b && vite build`) — succeeded; `dist/` output
+  169.98 kB JS / 7.40 kB CSS (gzip 55.42 kB / 2.11 kB).
+- `pnpm test:e2e` (Playwright, Chromium) — 2 passed.
+
+### Deferred
+- Every module's real page content, forms, tables, charts — Phase 1+.
+- TanStack Query, Radix UI, React Hook Form, Zod, Recharts, TanStack
+  Table, date-fns, Sonner, lucide-react — all tied to features this
+  sprint explicitly excludes.
+- Theme switching (light theme) — dark is the only theme designed in
+  detail today (§14); `class="dark"` is applied statically, no
+  `UserPreferences`-driven toggle yet (that's Settings' real
+  implementation, Phase 1).
+
+### Post-approval quality review
+A dedicated pass for dead code, placeholder consistency, HTTP-contract
+isolation, and unused Design System tokens, requested before commit:
+
+- **Unused tokens found and fixed:** `--color-accent`, `--color-warning`,
+  and `--color-success` were defined in `tokens.css` and mapped in
+  `tailwind.config.ts`, but no component actually used any of them as a
+  Tailwind class. Fixed two ways — `accent` was given a real, current
+  consumer (the active-nav-link indicator in `Sidebar.tsx`, a left
+  border); `warning`/`success` were removed entirely, since nothing in
+  Sprint 0.3's shell-only scope needs profit/loss/warning semantics yet
+  (no forms, no P&L display, no toasts). They get added when a real
+  consumer exists, not speculatively.
+- **HTTP-contract isolation confirmed:** `fetch()`, the API base URL, and
+  the raw (`snake_case`) error envelope shape appear only in
+  `src/api/client.ts`, `src/api/errors.ts`, and their own test files.
+  Every UI component (`ErrorBanner`, `ErrorContext`, pages, layout) only
+  ever touches the already-normalized `ApiError` class
+  (`error.code`/`error.message`/`error.traceId`), never the wire format.
+  One narrow, documented exception: `src/test-support/errorSimulation.ts`
+  constructs a simulated envelope so the E2E test can exercise the real
+  `parseApiError` path end to end — it is test scaffolding, not a UI
+  component, and it calls the real parser rather than bypassing it.
+- **Placeholder consistency confirmed:** all 10 module pages are
+  structurally identical — each imports and renders the same
+  `PlaceholderPage` component with only its `title` prop differing.
+- **No dead files/imports found** beyond one expected case:
+  `src/api/client.ts` (the API client layer) has no current caller, since
+  no feature module exists yet to call it — this is the sprint's own
+  explicit deliverable ("the API client layer"), not leftover code, the
+  same status `create_access_token` had after Sprint 0.2.
+- Re-ran `pnpm lint`, `pnpm typecheck`, `pnpm test` (5 passed), and
+  `pnpm build` after the token fix — all clean. Also re-ran
+  `pnpm test:e2e` (2 passed) since `Sidebar.tsx` was touched, though not
+  explicitly requested.

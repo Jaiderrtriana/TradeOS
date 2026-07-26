@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+.env
+coverage/
+playwright-report/
+test-results/
+.vite/
+*.tsbuildinfo

@@ -1,0 +1,37 @@
+/*
+ * Design System tokens — TRADEOS_FRONTEND_BLUEPRINT.md §14.
+ *
+ * "Consistency principles, not chosen values" — §14 deliberately specifies
+ * no exact colors. These are the concrete values that principle compiles
+ * down to for this codebase: one background/text/border palette (dark
+ * theme, the only theme designed in detail — §14), consumed by
+ * tailwind.config.ts rather than hardcoded per component, so a component
+ * cannot invent an off-scale value (the same enforcement rationale
+ * TRADEOS_TECHNICAL_STACK.md §6.6 gives for choosing Tailwind at all).
+ *
+ * RGB triplets (space-separated, no `rgb()` wrapper) so Tailwind's
+ * `rgb(var(--x) / <alpha-value>)` pattern can apply opacity utilities.
+ */
+:root {
+  /* Elevation (§14): base, raised card, modal/dialog. */
+  --color-bg-base: 10 10 12;
+  --color-bg-surface: 20 20 24;
+  --color-bg-overlay: 30 30 36;
+
+  --color-text-primary: 245 245 247;
+  --color-text-secondary: 165 165 175;
+  --color-text-muted: 110 110 120;
+
+  --color-border: 45 45 52;
+
+  /* Primary interactive/accent color — used by the active nav indicator
+     (Sidebar.tsx) today. */
+  --color-accent: 99 102 241;
+
+  /* Status color — used by ErrorBanner today. Only "danger" exists: no
+     current consumer needs "warning" or "success" yet (no forms, no P&L
+     display, no toasts in Sprint 0.3's shell-only scope) — per §14
+     ("whatever color means 'profit' means profit everywhere"), those get
+     added only once a real consumer needs them, not speculatively now. */
+  --color-danger: 239 68 68;
+}
