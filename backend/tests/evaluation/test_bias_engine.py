@@ -25,27 +25,30 @@ from app.modules.evaluation.domain.quality_engine import score_quality
 PROFILE = "day_trading"
 
 # Symmetric, clearly-synthetic signed category map -- illustrative only.
+# Deliberately small-magnitude (like the real seeded Bias data's category
+# points, roughly -5..+5) rather than already -100..100, so these tests
+# also exercise BIAS_SCALE_FACTOR the way real answers will.
 SIGNED_MAP = {
-    "Strongly Bullish": 100,
-    "Bullish": 50,
+    "Strongly Bullish": 5,
+    "Bullish": 2,
     "Neutral": 0,
-    "Bearish": -50,
-    "Strongly Bearish": -100,
+    "Bearish": -2,
+    "Strongly Bearish": -5,
 }
 
 CRITERIA = [
     EvaluationCriterion(
         id="bias.test_macro_signal",
         name="Test Macro Signal",
-        min_value=-100,
-        max_value=100,
+        min_value=-5,
+        max_value=5,
         category_map=SIGNED_MAP,
     ),
     EvaluationCriterion(
         id="bias.test_trend_signal",
         name="Test Trend Signal",
-        min_value=-100,
-        max_value=100,
+        min_value=-5,
+        max_value=5,
         category_map=SIGNED_MAP,
     ),
 ]
@@ -61,16 +64,18 @@ def test_bias_can_produce_a_negative_signed_score():
     zero, unlike every unsigned engine."""
     answers = {"bias.test_macro_signal": "Strongly Bearish", "bias.test_trend_signal": "Bearish"}
     score, breakdown = score_bias(CRITERIA, WEIGHTS, answers, PROFILE)
-    # (-100*0.6 + -50*0.4) / (0.6+0.4) = (-60 + -20) / 1.0 = -80
-    assert score.value == -80
+    # (-5*0.6 + -2*0.4) / (0.6+0.4) = (-3 + -0.8) / 1.0 = -3.8
+    # BIAS_SCALE_FACTOR (real Bias data proposal, decision #5) applies on
+    # top: -3.8 * 20 = -76.
+    assert score.value == -76
     assert len(breakdown) == 2
 
 
 def test_bias_can_also_produce_a_positive_score():
     answers = {"bias.test_macro_signal": "Strongly Bullish", "bias.test_trend_signal": "Bullish"}
     score, _ = score_bias(CRITERIA, WEIGHTS, answers, PROFILE)
-    # (100*0.6 + 50*0.4) / 1.0 = 60 + 20 = 80
-    assert score.value == 80
+    # (5*0.6 + 2*0.4) / 1.0 = 3.8, scaled by BIAS_SCALE_FACTOR=20 -> 76
+    assert score.value == 76
 
 
 def test_neutral_inputs_score_exactly_zero():

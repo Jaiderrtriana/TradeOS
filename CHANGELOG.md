@@ -1549,3 +1549,161 @@ relied upon rather than re-filtering by `criterion.is_active` here.
 - `POST /evaluation/preview` and any other HTTP surface — Sprint 3.2.
 - Any persistence (`evaluation_snapshots`/`evaluation_snapshot_breakdowns`)
   — Trading owns those tables and does not exist yet (Phase 4).
+
+## Sprint 3.2 (continued) — Bias Engine real data, following the approved proposal
+
+`PROPUESTA_DATOS_BIAS_ENGINE.md` (session-scoped review document, not
+committed) was reviewed and approved with six explicit decisions before
+any seed code was written. This entry documents what was actually
+implemented, plus two things discovered only while implementing it that
+required stopping and getting a further decision.
+
+### The six approved simplifications, as implemented
+
+Extracted from `legacy/Trading Journal v2.0 Stable.xlsx`, CHECKLIST
+sheet's "04 · BIAS ENGINE" section (`GROSS_SCORE`'s 35 real inputs,
+`⚙️ CONFIG` confirming no real per-criterion weight table exists for
+Bias) and the real `C5` "Operation Type" dropdown (`Day Trade
+Long/Short, Swing Long/Short, Breakout Long/Short` — confirmed via the
+CHECKLIST sheet's own data validation list, not `scoring_profile`).
+
+1. **Axis collapse:** the real "No-Swing" branch (Day Trade + Breakout,
+   either direction) → both `day_trading` and `scalping`; "Swing" → only
+   `swing_trading`.
+2. **Scalping has no real data** — inherits Day Trading's real numbers
+   verbatim (mechanical consequence of #1).
+3. **3 direction-dependent criteria** (`btc_dom`, `liq_4h`, `liq_24h`)
+   use the real "trade is Long" branch as one profile-uniform
+   `category_map` — `category_map` has no direction axis. Registered as
+   technical debt for Phase 4 (Trading), revisitable once
+   `Trade.direction` exists.
+4. **`atr`** branches on `Breakout Long/Short` in the real Excel (an axis
+   with no `scoring_profile` equivalent at all); the real "No-Breakout"
+   branch is used uniformly across all 3 profiles.
+5. **Equal weights** — `BIAS_WEIGHT = 1/35`, every criterion, every
+   profile it applies to. The real Excel sums all 35 unweighted; this is
+   the only reading that adds zero invented weighting.
+6. **11 of the 35 real fields** (the ones whose real category-to-point
+   mapping genuinely differs between "No-Swing" and "Swing") are seeded
+   as **two criterion rows** each (e.g. `bias.dxy` / `bias.dxy_swing`),
+   both sharing the real `source_field` (`dxy`) — `scoring_criteria
+   .category_map` cannot vary by profile on a single row. Net effect: 35
+   real fields become **46** `scoring_criteria` rows for Bias.
+   `scripts/seed_configuration.py`'s `BIAS_CRITERIA` (28 fields reusing
+   Market Context's real `source_field`s, 7 exclusive to Bias:
+   `setup_type`, `ltf_confirmation`, `correlation`, `invalidation`,
+   `risk_reward`, `entry_zone`, `emotional_state`).
+
+Not reproduced (already-accepted technical debt, unrelated to the six
+above): the real fixed 38/45 divisor — Bias divides by the sum of active
+weights instead (`INV-WEIGHT-01`).
+
+### Discovered mid-implementation #1: BIAS_SCALE_FACTOR
+
+With `BIAS_WEIGHT=1/35` and the real category points (mostly -4..+4, a
+few to -5), the weighted average naturally lands around -5..+5, not the
+Excel UI's -100..+100 (reached there only via the excluded 38/45
+divisor). Flagged before implementing further; you approved rescaling
+the final result by an explicit, isolated constant —
+`BIAS_SCALE_FACTOR = 20` in `bias_engine.py` only, applied after
+`compute_weighted_score`, before `round_half_up`. Not in
+`scoring_core.py`, not in Configuration's data or schema — a
+display/comparability decision, easily replaced by changing this one
+line if a future revision changes the Bias data's natural range.
+`tests/evaluation/test_bias_engine.py`'s synthetic fixtures and
+`tests/evaluation/test_evaluation_engine.py`'s orchestrator tests were
+updated to pre-scale magnitude (real-data-like, roughly -5..+5) so their
+existing expected outputs (-80/80/50/-50 etc.) still hold after scaling.
+
+### Discovered mid-implementation #2: Market Context's numeric criteria couldn't accept the fan-out's real answer
+
+Testing the fan-out against real seeded data (not synthetic fixtures)
+surfaced that `market_context.dxy` (Sprint 2.1) was seeded as a numeric
+criterion (`min_value=-4, max_value=4`, no `category_map`) — it expected
+`checklist_answers["dxy"]` to already be a converted number, while
+Bias's new `bias.dxy` expects the real category label (`"Strong
+Bullish"`). Both share the real `source_field` `dxy` by design; no
+single answer could satisfy both. Flagged before proceeding, since
+fixing it either way touches either the just-approved Bias data or
+already-shipped Sprint 2.1 data. **Your decision:** `checklist_answers`
+represents only the user's real label, never an already-normalized
+value — Market Context is corrected, Bias is not.
+
+**Fix:** the 28 Market Context criteria overlapping Bias's real fields
+were converted from numeric min/max to a **precalculated `category_map`**
+— each value computed once, at seed-data-authoring time, as
+`(raw_point − min) / (max − min) × 100`, using the exact real Excel point
+and this table's own already-shipped min/max. `normalize()` now does a
+direct category lookup instead of a rescale, but returns the identical
+number it always has for that answer — **a data-representation
+correction, not an Evaluation behavior change**: same scores, same
+grades, same API contract, zero changes to `scoring_core.py` or the REST
+contract. 11 of these 28 also needed the two-row split (#6 above, same
+real Day/Swing divergence, same mechanism) — e.g.
+`market_context.dxy` / `market_context.dxy_swing`, with each row's
+weight simply moved (not recomputed) from the single per-field entry
+already in `MARKET_CONTEXT_WEIGHTS` via a new
+`_split_profile_varying_weights` helper — no new weight data written by
+hand. `market_context.macro_events` and `market_context.confluence` (the
+2 Market Context criteria Bias's `GROSS_SCORE` doesn't read) are
+deliberately untouched, still numeric — explicitly out of this
+correction's scope, a known remaining inconsistency.
+
+**Regression-tested:** `tests/configuration/test_market_context_category
+_map_regression.py` — for every one of the 39 converted criterion rows
+and every real category label, calls the real `scoring_core.normalize()`
+both ways (old: numeric criterion fed the real raw point; new:
+categorical criterion fed the real label) and asserts identical output
+(39 parametrized cases + 1 structural count check = 40 tests).
+
+### Added
+- `scripts/seed_configuration.py` — `BIAS_CRITERIA` (46 rows),
+  `BIAS_WEIGHT`, `_seed_bias_criteria()`; `MARKET_CONTEXT_CRITERIA`
+  extended with `category_map` (41 rows, up from 30),
+  `MARKET_CONTEXT_PROFILE_VARYING_FIELDS`,
+  `_split_profile_varying_weights()`. `seed()` now seeds and publishes
+  Bias in the same run as every other engine — the "Bias intentionally
+  excluded" module-docstring section from Sprint 2.1 is replaced with
+  the full data-provenance writeup (six simplifications, both
+  mid-implementation corrections).
+- `app/modules/evaluation/domain/bias_engine.py` — `BIAS_SCALE_FACTOR`.
+- `scripts/__init__.py` — added so `scripts` resolves as one consistent
+  package to both pytest (tests now import `scripts.seed_configuration`
+  directly, monkeypatching its `SessionLocal`) and mypy (previously
+  ambiguous between `seed_configuration` and `scripts.seed_configuration`
+  once a second import path existed).
+- `tests/configuration/test_seed_bias_engine.py` — first automated
+  coverage of `seed_configuration.py` at all (previously "run manually,
+  verify by eye"): idempotency (`seed()` called twice, asserts exactly
+  46 Bias criteria and exactly one published version), per-profile
+  weight sums (`day_trading`/`swing_trading`/`scalping` each sum to
+  1.0), and the fan-out proven against real seeded data (`dxy` reaching
+  both `market_context.dxy` and `bias.dxy` from one real answer). Uses
+  its own dedicated, function-scoped Postgres container rather than the
+  suite's shared one — `seed()`'s "skip if already published" guard is a
+  whole-database invariant that would otherwise silently no-op whenever
+  this file ran after any other test that already published a version.
+- `tests/configuration/test_market_context_category_map_regression.py`
+  — see above.
+
+### Verification performed
+- `pytest` (full suite) — **164 passed** (42 new this round: 2 seed
+  integration tests, 40 Market Context regression tests; 122 carried
+  over). One unrelated, pre-existing flaky failure observed once
+  (`test_jwt.py::test_tampered_signature_is_rejected`) and confirmed
+  non-reproducing on re-run, in isolation and in the full suite twice —
+  not a regression from this work.
+- `ruff format` / `ruff check` / `mypy` — clean (mypy's two findings are
+  the same pre-existing, unrelated ones noted earlier in this sprint).
+- Special audit (per your request, re-verified after the Market Context
+  correction): zero forbidden cross-module imports between `evaluation`
+  and `configuration` (unchanged from earlier in this sprint); the
+  fan-out (`source_field -> list[criterion_id]`) confirmed working for
+  Market Context and Bias simultaneously against real data, not just
+  synthetic fixtures; `PreviewEvaluationUseCase` still performs exactly
+  the same 4 DB reads regardless of Bias/Market Context's larger row
+  counts (list scoring profiles, get configuration version, list
+  scoring criteria once unfiltered, list weights once per version) — no
+  new N+1 introduced; the seed is idempotent (verified by an automated
+  test, not just by eye); every profile's Bias weights sum to exactly
+  1.0 (verified by an automated test).

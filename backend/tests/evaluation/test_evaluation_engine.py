@@ -34,7 +34,11 @@ def test_evaluate_returns_all_five_engines_with_complete_breakdowns():
         quality=_single_criterion_input("quality.x", {"Yes": 100, "No": 0}),
         execution=_single_criterion_input("execution.x", {"Yes": 100, "No": 0}),
         market_context=_single_criterion_input("market_context.x", {"Yes": 100, "No": 0}),
-        bias=_single_criterion_input("bias.x", {"Bullish": 50, "Bearish": -50}),
+        # 2.5, not 50: bias_engine.py's BIAS_SCALE_FACTOR=20 (real Bias
+        # data proposal, decision #5) is applied after the weighted
+        # average, so a pre-scale value of 2.5 lands on the same 50/-50
+        # this test already asserted.
+        bias=_single_criterion_input("bias.x", {"Bullish": 2.5, "Bearish": -2.5}),
         answers=answers,
         profile_code=PROFILE,
     )
@@ -79,7 +83,11 @@ def test_engines_do_not_interfere_with_each_others_answers():
         quality=_single_criterion_input("quality.x", {"Yes": 100, "No": 0}),
         execution=_single_criterion_input("execution.x", {"Yes": 100, "No": 0}),
         market_context=_single_criterion_input("market_context.x", {"Yes": 100, "No": 0}),
-        bias=_single_criterion_input("bias.x", {"Bullish": 50, "Bearish": -50}),
+        # 2.5, not 50: bias_engine.py's BIAS_SCALE_FACTOR=20 (real Bias
+        # data proposal, decision #5) is applied after the weighted
+        # average, so a pre-scale value of 2.5 lands on the same 50/-50
+        # this test already asserted.
+        bias=_single_criterion_input("bias.x", {"Bullish": 2.5, "Bearish": -2.5}),
         answers=shared_answers,
         profile_code=PROFILE,
     )

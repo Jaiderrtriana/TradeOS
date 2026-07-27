@@ -75,7 +75,10 @@ async def _published_version_with_one_criterion_per_engine(client, headers, suff
         headers,
         "bias",
         suffix,
-        category_map={"Bullish": 50, "Bearish": -50},
+        # 2.5, not 50: bias_engine.py's BIAS_SCALE_FACTOR=20 (real Bias
+        # data proposal, decision #5) is applied after the weighted
+        # average, so a pre-scale value of 2.5 lands on 50 post-scale.
+        category_map={"Bullish": 2.5, "Bearish": -2.5},
     )
 
     version_response = await client.post(
@@ -193,7 +196,8 @@ async def test_preview_evaluation_source_field_fans_out_to_multiple_criteria(cli
             "source_field": shared_source_field,
             "min_value": 0,
             "max_value": 100,
-            "category_map": {"Yes": 50, "No": -50},
+            # 2.5, not 50: BIAS_SCALE_FACTOR=20 applies after the average.
+            "category_map": {"Yes": 2.5, "No": -2.5},
         },
         headers=headers,
     )
