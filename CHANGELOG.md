@@ -1707,3 +1707,143 @@ categorical criterion fed the real label) and asserts identical output
   new N+1 introduced; the seed is idempotent (verified by an automated
   test, not just by eye); every profile's Bias weights sum to exactly
   1.0 (verified by an automated test).
+
+## Sprint 3.3 — Evaluation Preview Frontend
+
+Phase 3's frontend sprint, per `TRADEOS_IMPLEMENTATION_MASTER_PLAN.md`:
+*"the live-updating Evaluation preview widget embedded in the
+(not-yet-built) Trade Entry flow's design, buildable now against
+`POST /evaluation/preview` alone... a standalone, testable preview
+component."* Milestone M3's frontend half. No backend, schema, or REST
+contract change — `POST /evaluation/preview`,
+`GET /configuration/scoring-criteria`, and
+`GET /configuration/scoring-profiles` were already complete (Sprint 2.1,
+2.3, 3.2).
+
+### Approved decisions, as implemented
+
+- Hosted at the already-scaffolded `/evaluation` route (replacing its
+  placeholder) — Trade Entry (Phase 4) doesn't exist yet to embed it in;
+  `EvaluationPage` is a pure host with zero preview logic of its own.
+  `EvaluationPreviewForm` takes no props, fetches its own reference data,
+  and owns all of its own state — dropping it into Trade Entry's Pro mode
+  later (`TRADEOS_FRONTEND_BLUEPRINT.md` §8.2's `NewTradeModal`) is a
+  one-line change.
+- Five `ScoreRing`s only (score + grade; Bias signed, no grade) — no
+  per-criterion breakdown table. That is the Rule Explorer's job,
+  explicitly deferred to Phase 4 (`TRADEOS_FRONTEND_BLUEPRINT.md` §5.4;
+  Master Plan Phase 3 notes: the Rule Explorer "explains a *historical*
+  Trade's score and needs real Trades to explain").
+- Errors render inline inside the widget (a small message + the
+  checklist stays fully interactive), never through the app-wide
+  `ErrorBanner` — `TRADEOS_FRONTEND_BLUEPRINT.md` §10's Evaluation
+  Preview row: *"Inline; a failed preview never blocks continuing to
+  fill the form, since preview is advisory."*
+- `ScoreRing` built as a genuinely shared component
+  (`src/components/ScoreRing.tsx`, not `features/evaluation/`) — §7 names
+  it reused later by Trade Detail and the Rule Explorer, neither built
+  yet.
+- Zero new dependencies. `@tanstack/react-query`, Radix (`Select`),
+  `zod`/`react-hook-form` were all already in `package.json`. Debounce is
+  a small, hand-written, framework-free utility (`debounce.ts`) rather
+  than a new package — deliberately not a React hook, so its timing is
+  unit-testable with Vitest's fake timers alone
+  (`TRADEOS_TECHNICAL_STACK.md` §10 names Vitest for pure-logic tests; no
+  DOM/component-rendering library is part of this stack, confirmed by
+  `vite.config.ts`'s own Sprint 0.3 comment — component-level interaction
+  testing lives in Playwright E2E instead, not a new unit-testing
+  dependency).
+
+### Race-condition safety (your validation requirement)
+
+`useQuery`'s `queryKey` includes the full debounced `(profile, answers)`
+state, so React Query treats each distinct answer-set as its own query
+identity — a slow, superseded request can never overwrite state for a
+*newer* key once the user has moved on. `placeholderData: keepPreviousData`
+keeps the last good snapshot visible during the gap (no flash-to-empty),
+which is also what makes an out-of-order/slow response harmless: only the
+result matching the *current* queryKey is ever rendered. Confirmed by the
+"rapid edits" E2E test (four fills in immediate succession, exactly one
+backend call, final score matches the *last* value only).
+
+### Discovered mid-implementation: a real backend race condition (not fixed — out of this sprint's scope)
+
+Writing the E2E fixtures (each test publishes its own Configuration
+version, since Configuration criteria have no creation UI — read-only by
+design, `ScoringVersionsTab.tsx`) reproduced two genuine backend bugs when
+publishes run concurrently:
+
+1. A crashing `sqlalchemy.exc.MultipleResultsFound` in
+   `GetConfigurationVersionUseCase.get_published()` when two rows end up
+   `status='published'` simultaneously.
+2. Silent data loss: whichever publish call's "supersede the previous
+   version" step finishes last wins — the other call's freshly-added
+   weight is orphaned from ever being evaluated, with no error raised at
+   all.
+
+Root cause: `PublishScoringConfigurationVersionUseCase`'s
+read-then-write "find the currently published version, supersede it,
+publish the new one" sequence is not atomic, and
+`TRADEOS_DATABASE_DESIGN.md` §6.6 lists only `version_label` as a Unique
+Constraint on `scoring_configuration_versions` — no partial unique index
+on `status='published'`, unlike the equivalent, already-used pattern on
+`evaluation_snapshots.trade_id WHERE is_current = true` (§6.12). This is a
+genuine gap between the Database Design's own narrative invariant ("never
+updated once published... the prior version's status transitions to
+superseded") and what it actually specifies as enforced.
+
+**Not fixed here** — squarely a backend/schema change, explicitly out of
+this (frontend-only) sprint's approved scope. Worked around at the test
+level only: `e2e/evaluation-preview.spec.ts` runs its own tests serially
+(`test.describe.configure({ mode: "serial" })`), and passes reliably run
+in isolation. Running the full E2E suite together can still flake because
+`configuration-and-catalogs.spec.ts`'s own publish test runs concurrently
+in a different Playwright worker — a pre-existing risk this sprint made
+visible, not introduced by it. Registered as technical debt for a future
+sprint to fix (a DB-level partial unique index plus either row-level
+locking or a single atomic UPDATE in the Use Case are the two most direct
+fixes).
+
+### Added
+- `frontend/src/components/ScoreRing.tsx` — shared score/grade
+  visualization (§7); Bias renders signed with no grade badge at all
+  (prop omitted, not `null`, so the two shapes are distinguished in the
+  type system, not just at runtime).
+- `frontend/src/features/evaluation/types.ts`, `api.ts` — own copies of
+  the Configuration read shapes/wrappers this feature needs
+  (`TRADEOS_FRONTEND_BLUEPRINT.md` §2.4 — no cross-feature imports).
+- `frontend/src/features/evaluation/debounce.ts` — the framework-free
+  debounce utility described above.
+- `frontend/src/features/evaluation/components/ChecklistField.tsx` — one
+  criterion, rendered from real Configuration data: a `Select` of the
+  real category labels when `category_map` is set, a bounded number
+  input otherwise.
+- `frontend/src/features/evaluation/components/EvaluationPreviewForm.tsx`
+  — the sprint's actual deliverable; also exports
+  `groupActiveCriteriaByEngine`/`upsertChecklistAnswer`, pure functions
+  covering the checklist-construction logic independent of rendering.
+- `frontend/src/features/evaluation/pages/EvaluationPage.tsx` — rewritten
+  from Sprint 0.3's placeholder into the demo host described above.
+- Tests: `debounce.test.ts` (collapsing rapid calls, quiet-period
+  re-firing, `cancel()`), `components/evaluationLogic.test.ts` (grouping,
+  active-only filtering, answer upsert/removal, non-mutation) — 9 new
+  Vitest tests. `e2e/evaluation-preview.spec.ts` — 4 Playwright tests
+  covering exactly your validation checklist: debounce reduces calls to
+  one, the checklist never becomes non-interactive (before, during, or
+  after a failure), a transient failure recovers on the next edit, and an
+  unauthenticated visitor is redirected.
+
+### Verification performed
+- `vitest run` — **34 passed** (9 new; 25 carried over).
+- `eslint` / `prettier --check` / `tsc -b --noEmit` — clean.
+- `vite build` — succeeds (441 KB / 138 KB gzipped, unchanged bundling
+  approach).
+- `playwright test e2e/evaluation-preview.spec.ts` — **4/4 passed**, run
+  in isolation (see the discovered backend race condition above for why
+  "in isolation" is the meaningful claim right now). The other 7
+  pre-existing E2E tests (`auth-and-preferences`,
+  `configuration-and-catalogs`, `error-banner`) still pass unaffected.
+- Audit: `grep` confirms zero imports of `features/configuration/*` from
+  `features/evaluation/*` in either direction; `EvaluationPreviewForm`
+  takes no props and is rendered unchanged by `EvaluationPage`, confirming
+  it is embeddable elsewhere without modification.
