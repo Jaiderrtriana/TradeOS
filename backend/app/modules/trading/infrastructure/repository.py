@@ -490,6 +490,25 @@ class TradeMistakeRepository:
             )
         )
 
+    async def list_by_trade_id(self, trade_id: uuid.UUID) -> list[TradeMistake]:
+        """`GET /trades/{id}/mistakes`: every Mistake Tag currently attached
+        to this Trade. One query, ordered newest-first (matching the
+        pagination/history ordering convention already used everywhere
+        else in this module)."""
+        result = await self._session.execute(
+            select(TradeMistakeModel)
+            .where(TradeMistakeModel.trade_id == trade_id)
+            .order_by(TradeMistakeModel.created_at.desc())
+        )
+        return [
+            TradeMistake(
+                trade_id=row.trade_id,
+                catalog_entry_id=row.catalog_entry_id,
+                created_at=row.created_at,
+            )
+            for row in result.scalars()
+        ]
+
 
 def _as_float(value: Any) -> float:
     return float(value)

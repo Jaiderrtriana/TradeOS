@@ -9,6 +9,12 @@ import type { ReactNode } from "react";
  * TRADEOS_TECHNICAL_STACK.md §6.5: Radix supplies "correct ARIA roles on a
  * Tabs component" — the exact reason it was selected over a hand-rolled
  * implementation.
+ *
+ * `value`/`onValueChange` (Sprint 4.4): optional controlled mode, added
+ * for Trade Entry's Simple/Pro toggle (`TRADEOS_FRONTEND_BLUEPRINT.md`
+ * §5.7), which needs the active tab as external state (submission logic
+ * reads it) — every earlier consumer stays uncontrolled via
+ * `defaultValue` alone, unaffected.
  */
 export interface TabItem {
   value: string;
@@ -19,11 +25,13 @@ export interface TabItem {
 export interface TabsProps {
   items: TabItem[];
   defaultValue: string;
+  value?: string;
+  onValueChange?: (value: string) => void;
 }
 
-export function Tabs({ items, defaultValue }: TabsProps) {
+export function Tabs({ items, defaultValue, value, onValueChange }: TabsProps) {
   return (
-    <RadixTabs.Root defaultValue={defaultValue}>
+    <RadixTabs.Root defaultValue={defaultValue} value={value} onValueChange={onValueChange}>
       <RadixTabs.List className="flex gap-1 border-b border-border" aria-label="Sections">
         {items.map((item) => (
           <RadixTabs.Trigger

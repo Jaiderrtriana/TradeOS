@@ -4,11 +4,13 @@ Trading presentation: `POST /trades` (Sprint 4.1); `PATCH /trades/{id}`,
 `DELETE /trades/{id}` (Sprint 4.2); `POST /trades/{id}/mistakes`
 (Sprint 4.3); `GET /trades`, `GET /trades/{id}`,
 `GET /trades/{id}/evaluation`, `GET /trades/{id}/evaluation/history`
-(read-endpoint gap closed ahead of Sprint 4.4, approved) —
-`TRADEOS_API_SPECIFICATION.md` §6.4/§6.5. `GET /trades/{id}/mistakes` and
-`DELETE /trades/{id}/mistakes/{catalogEntryId}` remain out of scope —
-same "Master Plan Objectives, not the API surface, define sprint scope"
-reasoning already applied in Sprint 4.2/4.3.
+(read-endpoint gap closed ahead of Sprint 4.4, approved);
+`GET /trades/{id}/mistakes` (Sprint 4.4: Trade Detail's Mistakes section
+cannot show already-tagged mistakes without it — approved) —
+`TRADEOS_API_SPECIFICATION.md` §6.4/§6.5. `DELETE /trades/{id}/mistakes/
+{catalogEntryId}` (untagging) remains out of scope — no Sprint 4.4
+frontend surface needs it yet, same "Master Plan Objectives, not the API
+surface, define sprint scope" reasoning already applied in Sprint 4.2/4.3.
 
 `Idempotency-Key` (optional header, §3.6) is handled here, at the router,
 via the generic `app/platform/idempotency.py` helper — a cross-cutting
@@ -45,6 +47,7 @@ from app.modules.trading.application.get_trade_evaluation import GetTradeEvaluat
 from app.modules.trading.application.get_trade_evaluation_history import (
     GetTradeEvaluationHistoryUseCase,
 )
+from app.modules.trading.application.list_trade_mistakes import ListTradeMistakesUseCase
 from app.modules.trading.application.list_trades import ListTradesUseCase
 from app.modules.trading.application.reevaluate_trade import ReevaluateTradeUseCase
 from app.modules.trading.application.register_trade import RegisterTradeUseCase
@@ -331,6 +334,24 @@ async def delete_trade(
     use_case = DeleteTradeUseCase(TradeRepository(session))
     await use_case.execute(trade_id, user_id)
     await session.commit()
+
+
+@router.get("/{trade_id}/mistakes", response_model=list[TradeMistakeResponse])
+async def list_trade_mistakes(
+    trade_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+    user_id: UUID = Depends(get_current_user_id),
+) -> list[TradeMistakeResponse]:
+    use_case = ListTradeMistakesUseCase(TradeRepository(session), TradeMistakeRepository(session))
+    trade_mistakes = await use_case.execute(trade_id, user_id)
+    return [
+        TradeMistakeResponse(
+            trade_id=tm.trade_id,
+            catalog_entry_id=tm.catalog_entry_id,
+            created_at=tm.created_at,
+        )
+        for tm in trade_mistakes
+    ]
 
 
 @router.post(

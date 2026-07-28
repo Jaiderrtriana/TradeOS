@@ -8,12 +8,8 @@ import { Badge } from "../../../components/Badge";
 import { DataTable } from "../../../components/DataTable";
 import { useErrorReporter } from "../../../components/ErrorContext";
 import { Select } from "../../../components/Select";
-import {
-  createCatalogEntry,
-  deactivateCatalogEntry,
-  listCatalogEntries,
-  updateCatalogEntry,
-} from "../catalogsApi";
+import { catalogEntryKeys, listCatalogEntries, type CatalogEntry } from "../../../shared/catalogEntries";
+import { createCatalogEntry, deactivateCatalogEntry, updateCatalogEntry } from "../catalogsApi";
 import {
   CATALOG_KIND_OPTIONS,
   createCatalogEntrySchema,
@@ -21,7 +17,6 @@ import {
   type CreateCatalogEntryFormValues,
   type RenameCatalogEntryFormValues,
 } from "../schemas";
-import type { CatalogEntry } from "../types";
 
 const KIND_FILTER_OPTIONS = [{ value: "", label: "All kinds" }, ...CATALOG_KIND_OPTIONS];
 
@@ -38,7 +33,7 @@ export function CatalogsManagementTab() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
 
   const { data: entries, isLoading } = useQuery({
-    queryKey: ["catalogs", kindFilter],
+    queryKey: catalogEntryKeys.list(kindFilter || undefined),
     queryFn: () => listCatalogEntries(kindFilter || undefined),
     staleTime: 60_000,
   });
@@ -58,7 +53,7 @@ export function CatalogsManagementTab() {
     mutationFn: (values: CreateCatalogEntryFormValues) =>
       createCatalogEntry(values.kind, values.name),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["catalogs"] });
+      queryClient.invalidateQueries({ queryKey: catalogEntryKeys.all });
       resetCreateForm();
     },
     onError: (error: ApiError) => reportError(error),
@@ -74,7 +69,7 @@ export function CatalogsManagementTab() {
     mutationFn: (values: RenameCatalogEntryFormValues) =>
       updateCatalogEntry(renamingId as string, values.name),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["catalogs"] });
+      queryClient.invalidateQueries({ queryKey: catalogEntryKeys.all });
       setRenamingId(null);
       resetRenameForm();
     },
@@ -84,7 +79,7 @@ export function CatalogsManagementTab() {
   const deactivateEntry = useMutation({
     mutationFn: (id: string) => deactivateCatalogEntry(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["catalogs"] });
+      queryClient.invalidateQueries({ queryKey: catalogEntryKeys.all });
     },
     onError: (error: ApiError) => reportError(error),
   });

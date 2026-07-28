@@ -1,16 +1,13 @@
 import { apiRequest } from "../../api/client";
-import type { CatalogEntry } from "./types";
+import type { CatalogEntry } from "../../shared/catalogEntries";
 
 /**
- * Catalogs API wrappers — TRADEOS_API_SPECIFICATION.md §6.7, all 4
- * endpoints (Sprint 2.2, verified against
- * backend/app/modules/configuration/presentation/catalogs_router.py).
+ * Catalogs API wrappers — TRADEOS_API_SPECIFICATION.md §6.7 (Sprint 2.2,
+ * verified against backend/app/modules/configuration/presentation/
+ * catalogs_router.py). The read (`listCatalogEntries`) moved to
+ * `src/shared/catalogEntries.ts` (Sprint 4.4) — Trading needs it too;
+ * these three writes remain Configuration's own.
  */
-
-export function listCatalogEntries(kind?: string): Promise<CatalogEntry[]> {
-  const query = kind ? `?kind=${encodeURIComponent(kind)}` : "";
-  return apiRequest<CatalogEntry[]>(`/catalogs${query}`);
-}
 
 export function createCatalogEntry(kind: string, name: string): Promise<CatalogEntry> {
   return apiRequest<CatalogEntry>("/catalogs", { method: "POST", body: { kind, name } });

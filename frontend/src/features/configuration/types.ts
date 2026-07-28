@@ -8,8 +8,12 @@
  * `ScoringProfile`/`ScoringCriterion` are **not** redefined here —
  * imported from `src/shared/scoringReferenceData.ts` instead
  * (Architecture Readiness Review, before Sprint 4.4): see that module's
- * own docstring.
+ * own docstring. `CatalogEntryKind`/`CatalogEntry` similarly moved to
+ * `src/shared/catalogEntries.ts` (Sprint 4.4) — Trading reads the exact
+ * same catalog entries.
  */
+
+export type { CatalogEntryKind, CatalogEntry } from "../../shared/catalogEntries";
 
 export interface EngineType {
   code: string;
@@ -43,15 +47,4 @@ export interface UpdateDraftWeightPayload {
   profile_code: string;
   weight: number;
   is_active?: boolean;
-}
-
-export type CatalogEntryKind = "setup" | "session" | "strategy" | "entry_trigger" | "mistake_tag";
-
-export interface CatalogEntry {
-  id: string;
-  kind: string;
-  name: string;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
 }

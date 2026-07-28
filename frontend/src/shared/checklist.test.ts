@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { ScoringCriterion } from "../../../shared/scoringReferenceData";
-import { groupActiveCriteriaByEngine, upsertChecklistAnswer } from "./EvaluationPreviewForm";
+import { groupActiveCriteriaByEngine, upsertChecklistAnswer } from "./checklist";
+import type { ScoringCriterion } from "./scoringReferenceData";
 
 function criterion(overrides: Partial<ScoringCriterion>): ScoringCriterion {
   return {

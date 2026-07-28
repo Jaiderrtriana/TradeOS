@@ -11,7 +11,9 @@ import { MistakesPage } from "./features/mistakes/pages/MistakesPage";
 import { PlaybookPage } from "./features/playbook/pages/PlaybookPage";
 import { PreferencesPage } from "./features/settings/pages/PreferencesPage";
 import { StatisticsPage } from "./features/statistics/pages/StatisticsPage";
-import { TradingPage } from "./features/trading/pages/TradingPage";
+import { TradeDetailPage } from "./features/trading/pages/TradeDetailPage";
+import { TradesListPage } from "./features/trading/pages/TradesListPage";
+import { RuleExplorerPage } from "./features/trading/pages/RuleExplorerPage";
 import { AppShell } from "./layout/AppShell";
 
 /**
@@ -35,7 +37,9 @@ export function AppRouter() {
         }
       >
         <Route path="/" element={<DashboardPage />} />
-        <Route path="/trades" element={<TradingPage />} />
+        <Route path="/trades" element={<TradesListPage />} />
+        <Route path="/trades/:tradeId" element={<TradeDetailPage />} />
+        <Route path="/trades/:tradeId/evaluation" element={<RuleExplorerPage />} />
         <Route path="/playbook" element={<PlaybookPage />} />
         <Route path="/journal" element={<JournalPage />} />
         <Route path="/statistics" element={<StatisticsPage />} />

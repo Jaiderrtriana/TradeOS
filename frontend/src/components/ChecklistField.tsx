@@ -1,5 +1,5 @@
-import { Select } from "../../../components/Select";
-import type { ScoringCriterion } from "../../../shared/scoringReferenceData";
+import { Select } from "./Select";
+import type { ScoringCriterion } from "../shared/scoringReferenceData";
 
 /**
  * One checklist question, rendered from real Configuration data
@@ -12,6 +12,12 @@ import type { ScoringCriterion } from "../../../shared/scoringReferenceData";
  * `min_value`/`max_value` (client-side range hint only, per
  * TRADEOS_FRONTEND_BLUEPRINT.md Principle 2 — the backend remains the
  * real gate).
+ *
+ * Moved here from `features/evaluation/components/` (Sprint 4.4): Trade
+ * Entry's Pro mode checklist needs the exact same field rendering
+ * Evaluation's preview form already established (Sprint 3.2) — a generic,
+ * reusable UI component belongs in `src/components/`, not duplicated
+ * per-feature, same reasoning as `ScoreRing`/`DataTable`.
  */
 export interface ChecklistFieldProps {
   criterion: ScoringCriterion;

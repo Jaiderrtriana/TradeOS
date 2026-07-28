@@ -1,7 +1,10 @@
 """
 Integration tests: `POST /trades/{id}/mistakes` (`TRADEOS_API_SPECIFICATION.md`
-§6.4, Sprint 4.3) — run through the real FastAPI app, same client/auth
-fixture pattern as tests/trading/test_trade_lifecycle_flow.py.
+§6.4, Sprint 4.3) and `GET /trades/{id}/mistakes` (Sprint 4.4: closed
+alongside the rest of that sprint's read-endpoint gaps, so Trade Detail's
+Mistakes section can show already-tagged mistakes) — run through the real
+FastAPI app, same client/auth fixture pattern as
+tests/trading/test_trade_lifecycle_flow.py.
 """
 
 import uuid
@@ -219,4 +222,61 @@ async def test_tag_mistake_requires_authentication(client):
         f"/api/v1/trades/{uuid.uuid4()}/mistakes",
         json={"catalog_entry_id": str(uuid.uuid4())},
     )
+    assert response.status_code == 401
+
+
+async def test_list_trade_mistakes_empty(client):
+    headers = await _auth_headers(client)
+    suffix = uuid.uuid4().hex[:8]
+    trade = await _register_trade(client, headers, suffix)
+
+    response = await client.get(f"/api/v1/trades/{trade['id']}/mistakes", headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json() == []
+
+
+async def test_list_trade_mistakes_returns_tagged_entries_newest_first(client):
+    headers = await _auth_headers(client)
+    suffix = uuid.uuid4().hex[:8]
+    trade = await _register_trade(client, headers, suffix)
+    first_id = await _create_catalog_entry(
+        client, headers, kind="mistake_tag", suffix=f"{suffix}-a"
+    )
+    second_id = await _create_catalog_entry(
+        client, headers, kind="mistake_tag", suffix=f"{suffix}-b"
+    )
+
+    for mistake_id in (first_id, second_id):
+        tag_response = await client.post(
+            f"/api/v1/trades/{trade['id']}/mistakes",
+            json={"catalog_entry_id": mistake_id},
+            headers=headers,
+        )
+        assert tag_response.status_code == 201, tag_response.text
+
+    response = await client.get(f"/api/v1/trades/{trade['id']}/mistakes", headers=headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [entry["catalog_entry_id"] for entry in body] == [second_id, first_id]
+    assert all(entry["trade_id"] == trade["id"] for entry in body)
+
+
+async def test_list_trade_mistakes_not_found_returns_404(client):
+    headers = await _auth_headers(client)
+    response = await client.get(f"/api/v1/trades/{uuid.uuid4()}/mistakes", headers=headers)
+    assert response.status_code == 404
+
+
+async def test_list_trade_mistakes_not_owned_returns_404(client):
+    headers_a = await _auth_headers(client)
+    headers_b = await _auth_headers(client)
+    suffix = uuid.uuid4().hex[:8]
+    trade = await _register_trade(client, headers_a, suffix)
+
+    response = await client.get(f"/api/v1/trades/{trade['id']}/mistakes", headers=headers_b)
+    assert response.status_code == 404
+
+
+async def test_list_trade_mistakes_requires_authentication(client):
+    response = await client.get(f"/api/v1/trades/{uuid.uuid4()}/mistakes")
     assert response.status_code == 401

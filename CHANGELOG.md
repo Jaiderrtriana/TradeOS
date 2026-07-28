@@ -2707,3 +2707,219 @@ default.
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Sprint 4.4 — Trading Frontend
+
+Trades List, Trade Detail, Trade Entry (Simple and Pro), the Rule
+Explorer, and Mistake-tagging UI — `TRADEOS_IMPLEMENTATION_MASTER_PLAN.md`
+Sprint 4.4's objectives, Milestone M4 ("First Real Trade, End to End").
+Built on every Sprint 4.1–4.4-prep decision already in place: the four
+`GET` read endpoints, `POST /trades/{id}/mistakes`, `VirtualizedDataTable`,
+the three-tier testing strategy, React Query key factories, and
+`eslint-plugin-boundaries`.
+
+### Resolved before writing any page: Simple vs. Pro default
+
+Product Bible Open Question 4 / Master Plan OQ-2 ("Is 'Simple' or 'Pro'
+Trade Entry the default daily workflow?") was still recorded as
+unresolved in both source documents when this sprint began — re-read and
+confirmed via an Explore pass before any code. Per your explicit
+resolution: **Simple is the default** ("Simple (predeterminado)"); Pro
+remains first-class but secondary in visual hierarchy ("Cambiar a Pro").
+Both modes submit through the exact same `POST /trades` contract and one
+shared `useTradeEntryForm` instance — only the capture experience
+differs. Recorded in `09_TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` §16
+(OQ-2 retired from the blocking table, folded into the "explicitly not
+included" explanation, mirroring the precedent already set there for
+OQ-6) — the Product Bible itself stays frozen and unedited, per its own
+"permanent foundation" status.
+
+### A second genuine gap, found and resolved before Trade Detail: `GET /trades/{id}/mistakes`
+
+Trade Detail's `MistakesCard` (`TRADEOS_FRONTEND_BLUEPRINT.md` §8.3)
+needs to show `Badge × N` for mistakes already tagged to a trade — but
+Sprint 4.3 shipped only `POST /trades/{id}/mistakes` (an explicit,
+approved scope decision at the time: "no adelantar funcionalidades por
+convenienca"). With no read endpoint, the card could not show what was
+already tagged. Same category of gap as the four `GET` endpoints found
+before this sprint started (an earlier sprint's deferral, now genuinely
+needed) — stopped and asked before writing the card. Your resolution:
+add `GET /trades/{id}/mistakes` now, same rigor as every other endpoint;
+`DELETE /trades/{id}/mistakes/{catalogEntryId}` (untagging) stays out of
+scope, since no Sprint 4.4 UI surface needs it yet.
+
+- `TradeMistakeRepository.list_by_trade_id()` — one query, newest first.
+- `ListTradeMistakesUseCase` — same 404 convention (not found / not
+  owned / soft-deleted) as every other Trading read.
+- `GET /trades/{id}/mistakes` reuses the existing `TradeMistakeResponse`
+  shape (Sprint 4.3) — no new response contract.
+- 5 new integration tests in the existing
+  `tests/trading/test_tag_mistake_flow.py` (empty list, tagged entries
+  returned newest-first, 404 not-found/not-owned, auth required).
+
+### Frontend architecture: promoting checklist/preview/catalog logic to `src/shared/`
+
+Building Trade Entry's Pro mode surfaced three more cases of the same
+pattern the Architecture Readiness Review already established for
+`scoringReferenceData.ts`: genuinely identical logic needed by two
+features, which `eslint-plugin-boundaries` (shipped in the prior entry)
+now correctly refuses to let one feature reach into another's internals
+for. Each was promoted, not duplicated:
+
+- **`ChecklistField`** (criterion → input/select rendering) moved
+  `features/evaluation/components/` → `src/components/` — a generic,
+  reusable UI component, not feature-specific.
+- **`debounce`** and the checklist pure-logic pair
+  (`groupActiveCriteriaByEngine`/`upsertChecklistAnswer`, plus the
+  `ChecklistAnswers` type) moved to `src/shared/debounce.ts` and
+  `src/shared/checklist.ts` — both were already unit-tested
+  (`evaluationLogic.test.ts`); the tests moved with them
+  (`src/shared/checklist.test.ts`, `src/shared/debounce.test.ts`).
+- **`POST /evaluation/preview`** itself (request/response types, the
+  `previewEvaluation()` call, its query-key factory) moved to
+  `src/shared/evaluationPreview.ts`. This is deliberately **not** the
+  same move as Trading's own persisted `EvaluationSnapshot` type in
+  `trading/types.ts`, which still duplicates rather than imports — that
+  one mirrors the backend's own "own DTOs per module" discipline
+  (`schemas.py`'s docstring) because it's a genuinely different read
+  (nullable, persisted, historical) over different data. The *preview*
+  call is the exact same HTTP contract two features already needed
+  unchanged, which is what `src/shared/` is for.
+- **`GET /catalogs?kind=`** (the read only) moved to
+  `src/shared/catalogEntries.ts` — Trade Entry's Pro mode
+  (strategy/setup/session/entry-trigger pickers) and Mistake tagging's
+  `CatalogPickerModal` both need it; Configuration's own catalog
+  *writes* (`create`/`update`/`deactivate`) stayed in
+  `features/configuration/catalogsApi.ts`, since only Trading needed the
+  read. `CatalogsManagementTab.tsx`'s own inline `["catalogs", kindFilter]`
+  query key was fixed to use the new `catalogEntryKeys` factory in the
+  same pass — a pre-existing inline-key instance the Architecture
+  Readiness Review's own rule (query keys always go through a factory)
+  had not yet reached.
+
+`features/evaluation/{api.ts,types.ts,queryKeys.ts}` were deleted
+outright rather than left as thin re-export shims: `EvaluationPreviewForm`
+was their only consumer, and after the above moves they held nothing
+feature-specific left to own.
+
+One new shared, generic component: **`src/components/Modal.tsx`**
+(Radix Dialog, controlled `open`/`onOpenChange`) — `ConfirmDialog`
+(Radix AlertDialog) is reserved for irreversible-action confirmations
+per its own docstring; New Trade, Amend, Close, Re-evaluate, and the
+Mistake-tag picker all need arbitrary form content plus a mutation's
+`onSuccess` closing the dialog programmatically, which an uncontrolled
+`Trigger`-only dialog can't do. `Tabs` (`src/components/Tabs.tsx`) grew
+optional `value`/`onValueChange` props for the same reason — every
+earlier consumer (Configuration) stays uncontrolled via `defaultValue`,
+unaffected.
+
+### Trade Entry — Simple and Pro, one shared form
+
+`useTradeEntryForm` owns one `react-hook-form` instance (`FormProvider`)
+so toggling Simple ↔ Pro never drops already-entered values, plus
+`checklist_answers` state (not a registered field — a dynamic
+per-criterion map, the same pattern `EvaluationPreviewForm` established).
+One Zod schema (`tradeEntrySchema`) validates both modes — Simple
+registers only the required subset (`market`, `direction`, `entry_price`,
+`stop_loss`, `scoring_profile`); Pro registers every optional field plus
+the checklist. `entryStopSideRefine` mirrors INV-TRADE-01 client-side
+(`TRADEOS_FRONTEND_BLUEPRINT.md` §10: "a fast-feedback client check,
+never the sole gate") — reused by `amendTradeSchema` too, conditionally,
+only when a proposed amendment's direction/entry_price/stop_loss are all
+present. `TradeEntryScorePreview` (Pro mode's live `POST
+/evaluation/preview` binding, §6.3) and `ChecklistSection` both reuse the
+shared debounce/checklist/preview modules unchanged.
+
+### Trades List — the first real consumer of `VirtualizedDataTable`
+
+Cursor pagination (`TRADEOS_API_SPECIFICATION.md` §7.4) modeled as
+`useInfiniteQuery`, not manual cursor-state juggling — "Load more"
+appends a page's rows to the already-virtualized list, matching the
+opaque, forward-only cursor contract. Filters exactly match `GET
+/trades`'s own filter set (direction, result, date range, strategy/setup/
+session) — `FilterBar` invents nothing beyond it. This is the first time
+`VirtualizedDataTable` renders real, variable-count data — E2E-verified
+(below) against a real browser's real layout engine, closing the loop the
+infra-prep entry above left open ("virtualized-row rendering/interaction
+… deferred to E2E once Trades List exists").
+
+### Trade Detail, Rule Explorer, Mistake tagging
+
+`ActionBar` offers Close only while `result === "open"` (§5.3: "Close if
+still Open"). `AmendTradeModal` submits the *entire* proposed state, not
+a diff — `PATCH /trades/{id}` re-validates the full state, and the
+Blueprint's own Forms table is explicit the frontend must not validate
+only the changed field. `ReevaluateModal` carries `scoring_profile`
+(`ReevaluateTradeRequest` requires it) but not `configuration_version_id`
+— no document names that as a UI field, and the API defaults it to the
+currently published version. `RuleExplorerPage`'s History tab: selecting
+a row expands the same `ScorePanel × 5` layout used for the current
+snapshot, per §5.4's own component tree. `JournalEntriesCard` is an
+explicit placeholder — the Journal module (Phase 5) doesn't exist yet, so
+there is no endpoint to read from; the card says so rather than silently
+omitting the section the Blueprint's tree calls for.
+
+### Testing — all three tiers, for real this time
+
+- **Unit**: `trading/schemas.test.ts` — INV-TRADE-01 both directions,
+  INV-TRADE-02 structural enforcement, amend's conditional refine.
+- **Component**: `TradeSummaryCard.test.tsx`, `ScorePanel.test.tsx` — pure
+  prop-driven components, no network, no layout dependency (the
+  documented component-tier boundary from the infra-prep entry).
+- **E2E** (`e2e/trading.spec.ts`) — run against the **real stack**: local
+  Postgres (`docker compose up postgres`), the real FastAPI backend
+  (`uvicorn`), and Playwright's real Chromium, not a simulation. Three
+  tests: the full Milestone M4 golden path (create via Simple mode → tag
+  a mistake → close → re-evaluate → Rule Explorer, current and history
+  tabs), Trades List rendering a created trade and navigating to its
+  detail on click (the real `VirtualizedDataTable` row-click interaction
+  jsdom cannot honestly verify), and the unauthenticated-redirect guard.
+  One real bug was caught and fixed during this run — not in the app: a
+  test fixture's market string (`E2E-List-${Date.now()}`) exceeded the
+  real 20-character backend limit, correctly triggering a `422` the test
+  hadn't accounted for. The full pre-existing E2E suite (12 further
+  tests across 4 files) was re-run alongside the new spec to confirm no
+  regression; `evaluation-preview.spec.ts` intermittently fails when run
+  concurrently with other files, reproduced here too — but this is the
+  already-documented, pre-existing Configuration-publish race condition
+  that file's own docstring names as known technical debt, confirmed
+  unrelated to this sprint by re-running it in isolation (passes
+  cleanly, 4/4).
+
+### Added
+- Backend: `backend/app/modules/trading/application/list_trade_mistakes.py`;
+  `TradeMistakeRepository.list_by_trade_id()`; `GET /trades/{id}/mistakes`
+  route; 5 new tests in `tests/trading/test_tag_mistake_flow.py`.
+- Frontend shared: `src/shared/{checklist,debounce,evaluationPreview,
+  catalogEntries}.ts` (+ `checklist.test.ts`, `debounce.test.ts`);
+  `src/components/{Modal,ChecklistField}.tsx`.
+- Frontend Trading feature: `src/features/trading/{types,api,queryKeys,
+  schemas}.ts` (+ `schemas.test.ts`); `hooks/useTradeEntryForm.ts`;
+  `pages/{TradesListPage,TradeDetailPage,RuleExplorerPage}.tsx`;
+  `components/{FilterBar,TradeEntryModal,SimpleForm,ProForm,
+  ChecklistSection,TradeEntryScorePreview,TradeSummaryCard,
+  EvaluationSummaryCard,MistakesCard,CatalogPickerModal,ActionBar,
+  AmendTradeModal,CloseTradeModal,ReevaluateModal,ScorePanel}.tsx`
+  (+ `TradeSummaryCard.test.tsx`, `ScorePanel.test.tsx`).
+- `e2e/trading.spec.ts` (3 tests).
+- New routes: `/trades/:tradeId`, `/trades/:tradeId/evaluation`
+  (`src/router.tsx`).
+- `@radix-ui/react-dialog` dependency (for `Modal`).
+
+### Verification performed
+- Backend: `pytest` — **239 passed**; `ruff format --check` / `ruff
+  check` / `mypy app` — clean (156 source files).
+- Frontend: `tsc --noEmit` — clean; `eslint .` — clean, zero warnings,
+  zero `boundaries/dependencies` violations; `vitest run` — **54
+  passed** (10 test files); `vite build` — succeeds (311 modules).
+- E2E: `playwright test` — **14 passed, 1 pre-existing documented flake**
+  (unrelated to this sprint, confirmed via isolated re-run) across the
+  full suite including the new `trading.spec.ts`.
+- Audit: `grep` confirms zero TODO/FIXME in any new file; zero direct
+  imports of `evaluation.domain`/`evaluation.infrastructure` or
+  `configuration.domain`/`configuration.infrastructure` from `trading/`
+  on the backend; the local dev stack (Postgres container, `uvicorn`
+  process) spun up only for this verification was torn down afterward.
+
+### Confirmation
+No `git push` was run at any point.

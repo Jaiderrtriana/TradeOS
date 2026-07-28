@@ -1,19 +1,18 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
+import { ChecklistField } from "../../../components/ChecklistField";
 import { ScoreRing } from "../../../components/ScoreRing";
 import { Select } from "../../../components/Select";
+import { groupActiveCriteriaByEngine, upsertChecklistAnswer } from "../../../shared/checklist";
+import type { ChecklistAnswers } from "../../../shared/checklist";
+import { debounce } from "../../../shared/debounce";
+import { evaluationPreviewKeys, previewEvaluation } from "../../../shared/evaluationPreview";
 import {
   listScoringCriteria,
   listScoringProfiles,
   scoringReferenceKeys,
-  type ScoringCriterion,
 } from "../../../shared/scoringReferenceData";
-import { previewEvaluation } from "../api";
-import { debounce } from "../debounce";
-import { evaluationKeys } from "../queryKeys";
-import type { ChecklistAnswers } from "../types";
-import { ChecklistField } from "./ChecklistField";
 import { STABLE_DATA_STALE_TIME_MS } from "../../../queryClient";
 
 const DEBOUNCE_MS = 500;
@@ -102,7 +101,7 @@ export function EvaluationPreviewForm() {
     error,
     isFetching,
   } = useQuery({
-    queryKey: evaluationKeys.preview(debouncedProfile, debouncedAnswers),
+    queryKey: evaluationPreviewKeys.preview(debouncedProfile, debouncedAnswers),
     queryFn: () =>
       previewEvaluation({ checklist_answers: debouncedAnswers, scoring_profile: debouncedProfile }),
     enabled: debouncedProfile !== "",
@@ -203,39 +202,4 @@ export function EvaluationPreviewForm() {
       </div>
     </div>
   );
-}
-
-/** Exported for unit testing (evaluationLogic.test.ts) independent of rendering. */
-export function groupActiveCriteriaByEngine(
-  criteria: ScoringCriterion[],
-): Record<string, ScoringCriterion[]> {
-  const grouped: Record<string, ScoringCriterion[]> = {};
-  for (const criterion of criteria) {
-    if (!criterion.is_active) {
-      continue;
-    }
-    (grouped[criterion.engine_type_code] ??= []).push(criterion);
-  }
-  return grouped;
-}
-
-/**
- * Pure `checklist_answers` construction — a field with `value === undefined`
- * (the user cleared it) is *removed* from the map entirely, never sent as
- * `null`/`""`, matching TRADEOS_API_SPECIFICATION.md line 190: "Omitted
- * fields simply mean those criteria don't contribute." Exported for unit
- * testing independent of rendering.
- */
-export function upsertChecklistAnswer(
-  answers: ChecklistAnswers,
-  sourceField: string,
-  value: string | number | undefined,
-): ChecklistAnswers {
-  const next = { ...answers };
-  if (value === undefined) {
-    delete next[sourceField];
-  } else {
-    next[sourceField] = value;
-  }
-  return next;
 }
