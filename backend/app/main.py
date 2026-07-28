@@ -6,8 +6,9 @@ Sprint 1.1 added Identity's four Authentication endpoints
 GET/PATCH (§6.3). Sprint 2.1 adds Configuration's full endpoint surface
 (§6.6). Sprint 2.2 adds Catalogs (§6.7) — a second API surface from the
 same Configuration backend module. Sprint 3.2 adds Evaluation's
-`POST /evaluation/preview` (§6.5). Every other module's presentation
-layer is still empty scaffolding.
+`POST /evaluation/preview` (§6.5). Sprint 4.1 adds Trading's
+`POST /trades` (§6.4). Every other module's presentation layer is still
+empty scaffolding.
 """
 
 from contextlib import asynccontextmanager
@@ -20,6 +21,7 @@ from app.modules.configuration.presentation.router import router as configuratio
 from app.modules.evaluation.presentation.router import router as evaluation_router
 from app.modules.identity.presentation.router import router as identity_router
 from app.modules.preferences.presentation.router import router as preferences_router
+from app.modules.trading.presentation.router import router as trading_router
 from app.platform.config import settings
 from app.platform.errors import register_exception_handlers
 from app.platform.events.dispatcher import dispatcher
@@ -64,6 +66,7 @@ app.include_router(preferences_router, prefix="/api/v1")
 app.include_router(configuration_router, prefix="/api/v1")
 app.include_router(catalogs_router, prefix="/api/v1")
 app.include_router(evaluation_router, prefix="/api/v1")
+app.include_router(trading_router, prefix="/api/v1")
 
 # Middleware order matters: Starlette runs the LAST-added middleware
 # OUTERMOST (first on the way in). Order, outermost to innermost:

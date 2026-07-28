@@ -1959,3 +1959,231 @@ against, working as intended on the first real bug it found.
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Sprint 4.1 — Core Trade Registration
+
+Phase 4 of the Implementation Master Plan, its first sprint: `POST /trades`
+(`TRADEOS_API_SPECIFICATION.md` §6.4), the "single most important write in
+the system" (§11.1) — INV-TRADE-01/02 validation, the synchronous
+Trading → Evaluation call, persistence of `Trade` + `ChecklistSnapshot` +
+`EvaluationSnapshot` (+ breakdown rows) in one transaction, and
+`Idempotency-Key` support (§3.6). Out of scope, confirmed before
+implementation began: `CloseTrade`, `AmendTrade`, `ReevaluateTrade`,
+`DeleteTrade`, `TagMistake`/`trade_mistakes`, the Trading frontend, and
+any change to Evaluation's or Configuration's own domain beyond two new
+cross-module factories.
+
+### Excel-derived business logic: the five computed properties
+
+`PROPUESTA_FORMULAS_TRADE_COMPUTED_PROPERTIES.md` (repo root) — full
+derivation, reviewed and approved before any domain code was written.
+Extracted from `legacy/Trading Journal v2.0 Stable.xlsx`'s `Trades` sheet
+via the same isolated `openpyxl` venv used in prior sprints (never a
+project dependency). The real Excel has only 2 trade rows
+(`last_row_with_data = 3`, both Long/SL) — both used as exact-match
+regression cases; three further cases (Short, TP, and the `mfe_r == 0`
+edge case) were hand-computed from the same confirmed formula, since the
+real data contains no Short and no TP trade, each explicitly labeled as
+such rather than presented as real. No hidden named ranges or lookup
+tables, unlike the scoring engines — pure same-row arithmetic.
+
+Three representation decisions, approved:
+1. **`captured_pct`'s three Excel states collapse to two in the API.**
+   The real formula (`=IF(OR(BB2="",BB2=0),"",IF(S2="TP",IFERROR(X2/BB2,""),"—"))`)
+   produces a number only for TP trades, the literal text `"—"` for
+   every other result, and blank when `mfe_r` is absent or zero. The API
+   returns a number or `null` — `"—"` and blank both collapse to `null`,
+   an editorial API-representation decision (matching how "not
+   applicable" is already represented elsewhere in this API, e.g.
+   `published_at: null`), not a business-logic change.
+2. **`captured_pct` returns the raw ratio, never a scaled percentage.**
+   The Excel column's own `number_format` is `"General"`, not `"0%"` — the
+   stored/computed value is `0.8`, never `80.0`. The API returns that same
+   raw ratio; formatting as a percentage is the frontend's job.
+3. **`captured_pct` and `potential_left_r` do NOT share a "blank"
+   condition, and this is deliberately preserved, not unified.**
+   `captured_pct` treats `mfe_r == 0` as blank (`null`);
+   `potential_left_r`'s real formula (`=IF(BB2="","",BB2-MAX(0,IF(X2="",0,X2)))`)
+   only blanks on a genuinely *absent* `mfe_r`, and still computes a real
+   number (`0.0`) when `mfe_r` is exactly zero. Verified with a
+   hand-computed edge case (Case 5) and implemented as two independent
+   `if` conditions in `Trade`, per explicit instruction not to simplify
+   "for consistency."
+
+### Resolved documentation gaps (stopped and asked before deciding, per standing instruction)
+
+1. **`closed_at` has no input field, but INV-TRADE-02 requires one.**
+   `TRADEOS_API_SPECIFICATION.md` §6.4 allows registering an
+   already-closed Trade in the same `POST /trades` call (`result` +
+   `exit_price` may be supplied at creation), and INV-TRADE-02's DB check
+   constraint requires `closed_at IS NOT NULL` whenever `result != open`
+   — but no document names `closed_at` as a request field. **Resolved:**
+   `RegisterTradeUseCase` sets `closed_at = now()` server-side, at the
+   moment the transaction is processed, whenever `result != open` AND
+   `exit_price` is supplied — never accepted from the request, no new
+   field added to the REST contract. If `result != open` but `exit_price`
+   is missing, `closed_at` correctly stays `null` too, and
+   `Trade.__post_init__`'s existing INV-TRADE-02 check rejects it as
+   incomplete (422) for free — no extra Use Case logic needed. Explicitly
+   scoped: this does **not** cover a future historical-import use case
+   (a real past `closed_at`) — that would need its own explicit design
+   (e.g. a dedicated import endpoint), not a reinterpretation of this one.
+2. **`scoring_profile` is required by the Evaluation call this Use Case
+   makes, but was never listed as a `POST /trades` request field.**
+   `PreviewEvaluationUseCase.execute()` (which `RegisterTradeUseCase`
+   reuses via the new `build_preview_evaluation_use_case` factory)
+   requires `scoring_profile` to resolve which `ScoringWeight` rows
+   apply — `POST /evaluation/preview` (§6.5) already lists it as
+   required, but §6.4's `POST /trades` body never did, and no document
+   names any other source for it (checked `UserPreferences` explicitly —
+   no `default_scoring_profile` or equivalent exists). **Resolved:**
+   `scoring_profile` is now a required field of `POST /trades`'s request
+   body, propagated verbatim to `PreviewEvaluationUseCase` — never
+   defaulted, never read from a preference, per explicit instruction:
+   *"El perfil debe formar parte del contexto explícito con el que se
+   registra cada trade."* This is a REST contract correction, not an
+   addition: `POST /trades`'s own documented flow already implies an
+   Evaluation call that cannot succeed without it.
+
+### Idempotency-Key mechanism (`app/platform/idempotency.py`, cross-cutting Platform concern)
+
+A new, generic `platform.idempotency_keys` table (migration `0008`), not
+a `trades` column — reusable by any future `POST`-create endpoint.
+Concurrency-safe by construction, per the explicit requirement to not
+repeat the just-fixed Configuration publish race: `claim_idempotency_key`
+attempts its `INSERT` inside a `session.begin_nested()` SAVEPOINT; the
+`UNIQUE (user_id, idempotency_key)` index (never a "SELECT to check, then
+INSERT" sequence) is what actually rejects a concurrent duplicate — the
+SAVEPOINT only ensures a losing INSERT's `IntegrityError` unwinds cleanly
+without poisoning the surrounding request transaction. The claim row, the
+wrapped Use Case's own writes, and the later response UPDATE all commit
+together, once, exactly like every other endpoint's transaction — so a
+Use Case failure before that commit discards the claim automatically
+(session close without commit = implicit rollback), with no separate
+"release on failure" step needed. A losing concurrent request either
+replays the winner's already-committed response (`StoredResponse`) or, if
+the winner hasn't committed yet, gets `409 Conflict`.
+
+### Other decisions
+
+- **Catalog reference validation is literal, not kind-cross-validated.**
+  `TRADEOS_BACKEND_BLUEPRINT.md` §4.1's precondition is "referenced
+  Catalog entries (if any) exist and are active" — `RegisterTradeUseCase`
+  checks exactly that for `strategy_id`/`setup_id`/`session_id`/
+  `entry_trigger_id`, via Configuration's new `GetCatalogEntryUseCase`
+  factory. It does **not** verify that, e.g., `strategy_id` actually
+  references a `kind='strategy'` row — no frozen document asks for this,
+  and adding it would be inventing a rule beyond the literal
+  precondition. Noted here as a deliberate reading, not an oversight.
+- **`mistake_ids`** (named in §6.4's request body) is not accepted by
+  this sprint's `RegisterTradeRequest` — `TagMistake`/`trade_mistakes`
+  belong to Sprint 4.3, per the Master Plan's own sprint boundary,
+  confirmed explicitly in this sprint's approved out-of-scope list.
+
+### A real bug found and fixed during implementation
+
+Both `RegisterTradeUseCase` (Trade → ChecklistSnapshot/EvaluationSnapshot)
+and `EvaluationSnapshotRepository.add()` (EvaluationSnapshot → its
+breakdown rows) initially added parent and child rows to the session
+without an intervening flush. This codebase declares no SQLAlchemy
+`relationship()` between any of its mapped classes (plain FK columns
+only, matching every prior module) — without one, the ORM's unit-of-work
+has no dependency information to order INSERTs correctly across
+*different* mapped classes on its own, and the flush inside
+`session.commit()` attempted `INSERT INTO checklist_snapshots` before
+`INSERT INTO trades`, tripping the FK constraint
+(`ForeignKeyViolationError`). Caught immediately by
+`test_register_trade_returns_full_trade_with_evaluation` on first run —
+never reached the manual-testing stage. Fixed with an explicit
+`await self._session.flush()` right after each parent `add()`, before its
+children are added — the same explicit-flush idiom this codebase already
+uses elsewhere for ordering-sensitive writes (e.g.
+`PublishScoringConfigurationVersionUseCase`'s own `session.flush()`
+before translating `IntegrityError`).
+
+### Architecture, as implemented
+
+- New `trading` module: `domain/{trade,checklist_snapshot,evaluation_snapshot}.py`,
+  `application/register_trade.py`, `infrastructure/{models,repository}.py`,
+  `presentation/{schemas,router}.py`.
+- Two migrations: `0007_create_trading_schema` (4 tables — deliberately
+  excludes `trade_mistakes`, owned by Sprint 4.3, same precedent as
+  `catalog_entries` being its own migration separate from the rest of
+  `configuration`) and `0008_create_platform_idempotency_keys`. Both
+  applied and verified via `alembic upgrade head` from a fully empty
+  database, plus a full `downgrade` → `upgrade` round-trip.
+- `trading.evaluation_snapshots` gets its partial unique index
+  (`ix_evaluation_snapshots_one_current_per_trade`, "exactly one current
+  snapshot per Trade") from day one, applying the same idiom
+  `scoring_configuration_versions` only got retroactively after a real
+  bug (migration `0006`) — this time proactively, since the pattern was
+  already known.
+- Two new cross-module factories, following the established pattern
+  (Preferences, Sprint 1.2; Configuration→Evaluation, Sprint 3.2):
+  `Configuration.get_catalog_entry.build_get_catalog_entry_use_case`
+  and `Evaluation.preview_evaluation.build_preview_evaluation_use_case`
+  (the latter also now used by `POST /evaluation/preview` itself,
+  replacing that endpoint's own inline four-factory wiring — a pure
+  refactor, zero behavior change).
+- `RegisterTradeUseCase` reads `EvaluationResult`'s attributes
+  structurally (`.confidence.score.value`, `.confidence.breakdown`, ...)
+  without importing `app.modules.evaluation.domain.*` — the same
+  discipline `PreviewEvaluationUseCase` itself already uses when
+  consuming Configuration's domain types.
+- Trading's own `EvaluationSnapshot`/`EvaluationSnapshotBreakdown`
+  domain shapes mirror — never import — Evaluation's
+  `EvaluationResult`/`EngineResult`/`CriterionBreakdownRow`, exactly as
+  those types' own docstrings already anticipated back in Sprint 3.2.
+  Same for the presentation layer: Trading's `EvaluationSnapshotResponse`
+  duplicates Evaluation's response shape rather than importing it — with
+  one deliberate divergence: its `score` fields are `float | None`
+  (matching `evaluation_snapshots`'s nullable columns), not Evaluation's
+  own non-optional `float` (a preview always computes a score fresh; a
+  persisted snapshot's nullable columns exist specifically so a future
+  sixth engine doesn't require rewriting history).
+
+### Added
+- `backend/app/modules/trading/` — full module (domain, application,
+  infrastructure, presentation) for `POST /trades`.
+- `backend/app/platform/idempotency.py` — the claim/replay mechanism
+  described above.
+- `backend/alembic/versions/0007_create_trading_schema.py`,
+  `0008_create_platform_idempotency_keys.py`.
+- `backend/app/modules/configuration/application/get_catalog_entry.py`,
+  `backend/app/modules/evaluation/application/preview_evaluation.py`
+  (factory added) — the two new cross-module factories.
+- Tests: `tests/trading/test_trade_domain.py` (16 tests — the five
+  computed properties against the two real Excel rows plus three
+  hand-computed cases, and INV-TRADE-01/02 validation);
+  `tests/trading/test_register_trade_flow.py` (9 HTTP-level integration
+  tests through the real FastAPI app: full response shape with nested
+  evaluation, an open trade's null computed properties, INV-TRADE-01/02
+  rejections, missing/inactive catalog reference rejections, an active
+  catalog reference accepted, authentication required, and
+  Idempotency-Key replay without duplicating the Trade);
+  `tests/platform/test_idempotency_concurrency.py` (3 tests against a
+  dedicated, isolated Postgres container, real concurrent sessions via
+  `asyncio.gather`: concurrent claims for the same key never both
+  succeed, sequential replay after completion, and the UNIQUE index
+  rejects a direct duplicate insert at the database level).
+
+### Verification performed
+- `pytest` (full suite) — **195 passed** (28 new; 167 carried over).
+- `ruff format --check` / `ruff check` / `mypy app` — clean (142 source
+  files).
+- Migrations verified against a dedicated, disposable Postgres container
+  (never the shared dev database): full chain `0001` → `0008` from
+  empty, plus a `downgrade` → `upgrade` round-trip for `0007`/`0008`.
+- Audit: zero `pyproject.toml` changes (no new dependency); `grep`
+  confirms zero imports of `evaluation.domain`/`evaluation.infrastructure`
+  or `configuration.domain`/`configuration.infrastructure` from
+  `trading/`; no TODO/FIXME left in any new file; catalog-reference
+  validation is 4 fixed, bounded queries (not a loop over an unbounded
+  collection, so not a real N+1); two pre-existing concurrency test
+  fixtures (`test_publish_concurrency.py`, `test_seed_bias_engine.py`)
+  needed a `CREATE SCHEMA trading` addition, since `Base.metadata` is
+  shared process-wide and now includes Trading's tables — fixed as part
+  of this sprint's own regression sweep, not deferred.
+
+### Confirmation
+No `git push` was run at any point.

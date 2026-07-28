@@ -37,17 +37,23 @@ grouping criteria). Never one query per engine.
 
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.modules.configuration.application.get_configuration_version import (
     GetConfigurationVersionUseCase,
+    build_get_configuration_version_use_case,
 )
 from app.modules.configuration.application.list_configuration_weights import (
     ListConfigurationWeightsUseCase,
+    build_list_configuration_weights_use_case,
 )
 from app.modules.configuration.application.list_scoring_criteria import (
     ListScoringCriteriaUseCase,
+    build_list_scoring_criteria_use_case,
 )
 from app.modules.configuration.application.list_scoring_profiles import (
     ListScoringProfilesUseCase,
+    build_list_scoring_profiles_use_case,
 )
 from app.modules.evaluation.domain.evaluation_criterion import EvaluationCriterion
 from app.modules.evaluation.domain.evaluation_engine import evaluate
@@ -154,3 +160,20 @@ class PreviewEvaluationUseCase:
             answers=translated_answers,
             profile_code=scoring_profile,
         )
+
+
+def build_preview_evaluation_use_case(session: AsyncSession) -> PreviewEvaluationUseCase:
+    """Factory exposed so Trading's Application layer (`RegisterTradeUseCase`,
+    Sprint 4.1) can run the exact same evaluation this Use Case already
+    performs for `POST /evaluation/preview`, without duplicating the
+    five-engine orchestration or reaching into Configuration itself — same
+    cross-module pattern as Configuration's own `build_*` factories this
+    Use Case already depends on. `presentation/router.py` wired these four
+    factories inline before this factory existed (Sprint 3.2); this simply
+    centralizes that same wiring for reuse from another module."""
+    return PreviewEvaluationUseCase(
+        build_get_configuration_version_use_case(session),
+        build_list_scoring_criteria_use_case(session),
+        build_list_configuration_weights_use_case(session),
+        build_list_scoring_profiles_use_case(session),
+    )

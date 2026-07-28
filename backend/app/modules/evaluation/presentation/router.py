@@ -10,19 +10,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.configuration.application.get_configuration_version import (
-    build_get_configuration_version_use_case,
+from app.modules.evaluation.application.preview_evaluation import (
+    build_preview_evaluation_use_case,
 )
-from app.modules.configuration.application.list_configuration_weights import (
-    build_list_configuration_weights_use_case,
-)
-from app.modules.configuration.application.list_scoring_criteria import (
-    build_list_scoring_criteria_use_case,
-)
-from app.modules.configuration.application.list_scoring_profiles import (
-    build_list_scoring_profiles_use_case,
-)
-from app.modules.evaluation.application.preview_evaluation import PreviewEvaluationUseCase
 from app.modules.evaluation.domain.criterion_breakdown_row import CriterionBreakdownRow
 from app.modules.evaluation.domain.evaluation_result import EngineResult, EvaluationResult
 from app.modules.evaluation.presentation.schemas import (
@@ -44,12 +34,7 @@ async def preview_evaluation(
     session: AsyncSession = Depends(get_db_session),
     user_id: UUID = Depends(get_current_user_id),
 ) -> EvaluationSnapshotResponse:
-    use_case = PreviewEvaluationUseCase(
-        build_get_configuration_version_use_case(session),
-        build_list_scoring_criteria_use_case(session),
-        build_list_configuration_weights_use_case(session),
-        build_list_scoring_profiles_use_case(session),
-    )
+    use_case = build_preview_evaluation_use_case(session)
     result = await use_case.execute(
         checklist_answers=payload.checklist_answers,
         scoring_profile=payload.scoring_profile,
