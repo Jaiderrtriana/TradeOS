@@ -1,13 +1,17 @@
 """
-Trading presentation: `POST /trades` (TRADEOS_API_SPECIFICATION.md §6.4).
-The only Trading endpoint in scope for Sprint 4.1 — `GET /trades`,
-`GET /trades/{id}`, `PATCH`, `/close`, `/reevaluate`, `DELETE`, and the
-Mistakes sub-resource all belong to later sprints (4.2/4.3).
+Trading presentation: `POST /trades` (Sprint 4.1) plus `PATCH /trades/{id}`,
+`POST /trades/{id}/close`, `POST /trades/{id}/reevaluate`, and
+`DELETE /trades/{id}` (Sprint 4.2) — `TRADEOS_API_SPECIFICATION.md` §6.4.
+`GET /trades`, `GET /trades/{id}`, and the Mistakes sub-resource remain
+out of scope, confirmed for Sprint 4.2 (deferred to whichever sprint
+first needs them; Mistakes specifically belongs to Sprint 4.3).
 
 `Idempotency-Key` (optional header, §3.6) is handled here, at the router,
 via the generic `app/platform/idempotency.py` helper — a cross-cutting
-concern, not Trading-specific — wrapping exactly the one write this
-endpoint performs.
+concern, not Trading-specific — and applies only to `POST /trades`
+(§3.6: "Every `POST` that creates a resource" — `PATCH`/`DELETE` are
+idempotent by HTTP method semantics already, and `close`/`reevaluate`
+are explicitly excluded: "never a `POST` that performs an action").
 """
 
 from uuid import UUID
@@ -25,21 +29,26 @@ from app.modules.configuration.application.get_configuration_version import (
 from app.modules.evaluation.application.preview_evaluation import (
     build_preview_evaluation_use_case,
 )
-from app.modules.trading.application.register_trade import (
-    RegisterTradeResult,
-    RegisterTradeUseCase,
-)
+from app.modules.trading.application.amend_trade import AmendTradeUseCase
+from app.modules.trading.application.close_trade import CloseTradeUseCase
+from app.modules.trading.application.delete_trade import DeleteTradeUseCase
+from app.modules.trading.application.reevaluate_trade import ReevaluateTradeUseCase
+from app.modules.trading.application.register_trade import RegisterTradeUseCase
 from app.modules.trading.domain.evaluation_snapshot import EvaluationSnapshot
+from app.modules.trading.domain.trade import Trade
 from app.modules.trading.infrastructure.repository import (
     ChecklistSnapshotRepository,
     EvaluationSnapshotRepository,
     TradeRepository,
 )
 from app.modules.trading.presentation.schemas import (
+    AmendTradeRequest,
     BiasEngineResultResponse,
+    CloseTradeRequest,
     CriterionBreakdownRowResponse,
     EvaluationSnapshotResponse,
     GradedEngineResultResponse,
+    ReevaluateTradeRequest,
     RegisterTradeRequest,
     TradeResponse,
 )
@@ -102,7 +111,7 @@ async def register_trade(
         mae_price=payload.mae_price,
         checklist_answers=payload.checklist_answers,
     )
-    response = _trade_response(result)
+    response = _trade_response(result.trade, result.evaluation)
 
     if claim is not None:
         await store_idempotent_response(
@@ -113,8 +122,90 @@ async def register_trade(
     return response
 
 
-def _trade_response(result: RegisterTradeResult) -> TradeResponse:
-    trade = result.trade
+@router.patch("/{trade_id}", response_model=TradeResponse)
+async def amend_trade(
+    trade_id: UUID,
+    payload: AmendTradeRequest,
+    session: AsyncSession = Depends(get_db_session),
+    user_id: UUID = Depends(get_current_user_id),
+) -> TradeResponse:
+    use_case = AmendTradeUseCase(TradeRepository(session), dispatcher, session)
+    trade = await use_case.execute(trade_id, user_id, payload.model_dump(exclude_unset=True))
+    evaluation = await _require_current_evaluation(session, trade_id)
+    await session.commit()
+    return _trade_response(trade, evaluation)
+
+
+@router.post("/{trade_id}/close", response_model=TradeResponse)
+async def close_trade(
+    trade_id: UUID,
+    payload: CloseTradeRequest,
+    session: AsyncSession = Depends(get_db_session),
+    user_id: UUID = Depends(get_current_user_id),
+) -> TradeResponse:
+    use_case = CloseTradeUseCase(TradeRepository(session), dispatcher, session)
+    trade = await use_case.execute(
+        trade_id,
+        user_id,
+        result=payload.result,
+        exit_price=payload.exit_price,
+        mfe_price=payload.mfe_price,
+        mae_price=payload.mae_price,
+    )
+    evaluation = await _require_current_evaluation(session, trade_id)
+    await session.commit()
+    return _trade_response(trade, evaluation)
+
+
+@router.post("/{trade_id}/reevaluate", response_model=EvaluationSnapshotResponse)
+async def reevaluate_trade(
+    trade_id: UUID,
+    payload: ReevaluateTradeRequest,
+    session: AsyncSession = Depends(get_db_session),
+    user_id: UUID = Depends(get_current_user_id),
+) -> EvaluationSnapshotResponse:
+    use_case = ReevaluateTradeUseCase(
+        TradeRepository(session),
+        ChecklistSnapshotRepository(session),
+        EvaluationSnapshotRepository(session),
+        build_get_configuration_version_use_case(session),
+        build_preview_evaluation_use_case(session),
+        dispatcher,
+        session,
+    )
+    snapshot = await use_case.execute(
+        trade_id,
+        user_id,
+        scoring_profile=payload.scoring_profile,
+        configuration_version_id=payload.configuration_version_id,
+    )
+    await session.commit()
+    return _evaluation_response(snapshot)
+
+
+@router.delete("/{trade_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_trade(
+    trade_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+    user_id: UUID = Depends(get_current_user_id),
+) -> None:
+    use_case = DeleteTradeUseCase(TradeRepository(session))
+    await use_case.execute(trade_id, user_id)
+    await session.commit()
+
+
+async def _require_current_evaluation(session: AsyncSession, trade_id: UUID) -> EvaluationSnapshot:
+    """Every Trade owns exactly one current `EvaluationSnapshot`, maintained
+    since `RegisterTrade` -- a `None` here would be a genuine data-integrity
+    bug elsewhere, not a request-shape concern, so it fails loudly rather
+    than being folded into the request-facing error envelope."""
+    evaluation = await EvaluationSnapshotRepository(session).get_current_by_trade_id(trade_id)
+    if evaluation is None:
+        raise RuntimeError(f"Trade '{trade_id}' has no current EvaluationSnapshot.")
+    return evaluation
+
+
+def _trade_response(trade: Trade, evaluation: EvaluationSnapshot) -> TradeResponse:
     return TradeResponse(
         id=trade.id,
         market=trade.market,
@@ -142,7 +233,7 @@ def _trade_response(result: RegisterTradeResult) -> TradeResponse:
         mae_r=trade.mae_r,
         captured_pct=trade.captured_pct,
         potential_left_r=trade.potential_left_r,
-        evaluation=_evaluation_response(result.evaluation),
+        evaluation=_evaluation_response(evaluation),
     )
 
 

@@ -2187,3 +2187,160 @@ before translating `IntegrityError`).
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Sprint 4.2 — Amend, Close, Re-evaluate, Delete
+
+Phase 4, second sprint: `AmendTrade`, `CloseTrade`, `ReevaluateTrade`,
+`DeleteTrade` (soft) — `TRADEOS_BACKEND_BLUEPRINT.md` §4.2–4.3, 4.8;
+`TRADEOS_API_SPECIFICATION.md` §6.4's `PATCH /trades/{id}`,
+`POST /trades/{id}/close`, `POST /trades/{id}/reevaluate`,
+`DELETE /trades/{id}`. No new migration, no new dependency — every
+column these four actions need already exists from migration `0007`.
+
+### Resolved documentation gap: `scoring_profile` on `ReevaluateTrade`
+
+Same class of gap as Sprint 4.1's own `POST /trades` fix, surfacing again
+here: `ReevaluateTradeUseCase` calls `PreviewEvaluationUseCase`, which
+requires `scoring_profile` — but `scoring_profile` was deliberately never
+persisted anywhere (not on `trades`, not on `evaluation_snapshots`, per
+Sprint 4.1's own explicit decision), and API Specification §6.4 lists
+only `configuration_version_id` in `reevaluate`'s request body. **Resolved
+(approved):** `scoring_profile` is now a required field of
+`POST /trades/{id}/reevaluate` too — propagated verbatim, never
+persisted, never defaulted, never read from a preference. All three
+calls into Evaluation across this codebase (`POST /evaluation/preview`,
+`POST /trades`, `POST /trades/{id}/reevaluate`) now share the exact same
+explicit input contract.
+
+### Scope boundaries resolved by citation (no gap, no question needed)
+
+- **`PATCH /trades/{id}` cannot transition `result`/`exit_price`/
+  `closed_at`.** Two independent citations converge on this: the
+  lifecycle diagram (`TRADEOS_DOMAIN_MODEL.md` §13.1) only ever draws
+  `Open──amend──▶Open` and `Closed──amend──▶Closed`, never
+  `Open──amend──▶Closed`; and API Specification §3.5 states the rule
+  directly — *"`POST /trades/{id}/close` — not `PATCH /trades/{id}` with
+  `result` in the body — because closing enforces... `TradeClosed`."*
+  `AmendTradeRequest`'s schema simply has no such fields; sending them is
+  silently ignored (Pydantic's default extra-field behavior), verified by
+  a dedicated regression test.
+- **`direction` is confirmed amendable** — Backend Blueprint §4.8's own
+  example ("changing `direction` without changing `stop_loss`") uses it
+  as the canonical case for why the *full* merged state is re-validated,
+  not just the changed field.
+- **`checklist_answers` is never amendable** — `ReevaluateTrade` (§4.3)
+  explicitly reloads the existing `ChecklistSnapshot` "(unchanged)."
+- **`DeleteTrade` is idempotent** (§3.4: "`DELETE`... Soft-delete...
+  Idempotent: Yes") — deleting an already-deleted Trade is a successful
+  no-op, never a 404, a deliberate narrow exception to every other Sprint
+  4.2 action's own "soft-deleted behaves as not-found" rule.
+- **`GET /trades` and `GET /trades/{id}` are confirmed out of scope** —
+  the Master Plan's own Sprint 4.2 *Objectives* line names only the four
+  write actions; confirmed explicitly rather than added for testing
+  convenience. All integration tests verify state via direct database
+  reads, exactly as Sprint 4.1's own tests already did.
+- **`ReevaluateTrade`'s concurrency mechanism is `SELECT ... FOR UPDATE`
+  on the Trade row, not a `pg_advisory_xact_lock`** — confirmed as the
+  right choice specifically *because* it differs from Configuration's
+  publish-lock precedent: "the currently published version" is a row
+  whose *identity* changes on every publish (ruling out `FOR UPDATE`
+  there), but "Trade X" is always the same, stable row — a plain row
+  lock has no such staleness problem here.
+
+### Two real bugs found and fixed during implementation
+
+1. **`Decimal`/`float` mismatch on every Trade read back from the
+   database.** `TradeModel`'s `Numeric` columns come back from asyncpg as
+   `decimal.Decimal`, not `float` — Sprint 4.1 never noticed because
+   nothing ever read a `Trade` back from the database (`RegisterTradeUseCase`
+   only ever worked with its own freshly-constructed, all-`float` object).
+   Sprint 4.2 is the first code to call `TradeRepository.get_by_id()`, and
+   `AmendTradeUseCase` was the first to mix a DB-loaded `Decimal` field
+   with a freshly-patched `float` field on the same object — `Trade`'s own
+   computed properties (`r_multiple`, etc.) do raw Python arithmetic on
+   `self.entry_price - self.stop_loss`, which raises `TypeError` the
+   instant one operand is `Decimal` and the other `float`. Caught
+   immediately by `test_amend_trade_updates_facts_and_recomputes_properties`
+   on first run. Fixed by casting every `Numeric`-backed field to `float`
+   explicitly in `_trade_to_domain()` and in
+   `EvaluationSnapshotRepository.get_current_by_trade_id()` (the same
+   class of bug, fixed proactively there too, before it could bite).
+2. **Test-data bug, not an application bug** (documented for completeness,
+   since it looked like a real failure at first): an early draft of the
+   `reevaluate` regression test created a *second, independent* set of
+   scoring criteria for the second configuration version, with different
+   `source_field`s than the original `ChecklistSnapshot`'s answers — so
+   the reused checklist answer never matched any criterion under the new
+   version, and the assertion failed for an uninteresting reason. Fixed by
+   reusing the *same* criteria (global, shared across every configuration
+   version — only weights are per-version) across both versions in the
+   test, editing only a criterion's `category_map` between the two calls.
+
+### Architecture, as implemented
+
+- `evaluation_snapshot_mapping.py` (new): `build_evaluation_snapshot()`,
+  extracted from `RegisterTradeUseCase`'s own Sprint 4.1 inline logic once
+  `ReevaluateTradeUseCase` needed the exact same construction — reused,
+  not duplicated. Zero behavior change to `RegisterTradeUseCase`.
+- `TradeRepository` gains `get_by_id`, `get_by_id_for_update` (`FOR
+  UPDATE`), `update` (full overwrite of every mutable column — safe
+  because `AmendTradeUseCase` already re-validates the complete proposed
+  state before calling it). `ChecklistSnapshotRepository` gains
+  `get_by_trade_id`. `EvaluationSnapshotRepository` gains
+  `get_current_snapshot_id`, `mark_not_current` (flushes internally,
+  called *before* the new snapshot is added — same self-conflict lesson
+  as `PublishScoringConfigurationVersionUseCase`), and
+  `get_current_by_trade_id` (full read with breakdowns, for `TradeResponse.
+  evaluation` on `AmendTrade`'s/`CloseTrade`'s responses).
+- Four new Use Cases (`amend_trade.py`, `close_trade.py`,
+  `reevaluate_trade.py`, `delete_trade.py`), all reusing the same free
+  validator functions (`validate_stop_placement`,
+  `validate_close_requires_result_and_exit_price`) `Trade.__post_init__`
+  itself already calls — amendment, closing, and registration can never
+  silently diverge on what counts as a valid Trade state.
+- Presentation: `PATCH /trades/{id}` and `POST /trades/{id}/close` both
+  return the same `TradeResponse` (with `evaluation` nested), per
+  §6.4's "the updated Trade." `POST /trades/{id}/reevaluate` returns only
+  `EvaluationSnapshotResponse` — §6.4 says "the new Evaluation Snapshot,"
+  not "the updated Trade," a deliberate difference, not an oversight.
+  `DELETE /trades/{id}` returns `204 No Content`.
+- No new cross-module factories needed — reuses
+  `build_get_configuration_version_use_case` and
+  `build_preview_evaluation_use_case`, both already built in Sprint 4.1.
+
+### Added
+- `backend/app/modules/trading/application/{amend_trade,close_trade,
+  reevaluate_trade,delete_trade,evaluation_snapshot_mapping}.py`.
+- Tests: `tests/trading/test_trade_lifecycle_flow.py` (16 HTTP-level
+  integration tests: amend updates facts and recomputes properties, amend
+  re-validates the full merged state against INV-TRADE-01, amend silently
+  ignores `result`/`exit_price`, amend 404s for not-found/not-owned/
+  unauthenticated; close succeeds, preserves existing `mfe_price`/
+  `mae_price` when omitted, 409s if already closed, 422s if
+  `exit_price` missing; reevaluate produces a new current snapshot and
+  supersedes the old one — verified directly against the database — 422s
+  against a draft version, 404s for a missing Trade; delete soft-deletes
+  and is idempotent, a soft-deleted Trade 404s on amend, delete requires
+  authentication); `tests/trading/test_reevaluate_concurrency.py` (1 test
+  against a dedicated, isolated Postgres container, real concurrent
+  sessions via `asyncio.gather`: two concurrent `reevaluate` calls for the
+  same Trade never leave two or zero current `EvaluationSnapshot`s).
+
+### Verification performed
+- `pytest` (full suite) — **212 passed** (17 new; 195 carried over).
+- `ruff format --check` / `ruff check` / `mypy app` — clean (147 source
+  files).
+- Migration chain `0001` → `0008` re-verified against a fresh, disposable
+  Postgres container (no schema changed this sprint, but re-confirmed
+  anyway).
+- Audit: zero `pyproject.toml` changes; `grep` confirms zero imports of
+  `evaluation.domain`/`evaluation.infrastructure` or
+  `configuration.domain`/`configuration.infrastructure` from `trading/`;
+  no TODO/FIXME in any new file; no N+1 (every new repository method is a
+  single bounded query, `AmendTradeUseCase.AMENDABLE_FIELDS` guard is an
+  in-memory set difference); two pre-existing concurrency test fixtures
+  needed a `CREATE SCHEMA trading` addition after Sprint 4.1 (documented
+  there) — none needed further changes this sprint.
+
+### Confirmation
+No `git push` was run at any point.

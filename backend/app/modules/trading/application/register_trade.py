@@ -54,7 +54,6 @@ between two independent reads.
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -63,11 +62,9 @@ from app.modules.configuration.application.get_configuration_version import (
     GetConfigurationVersionUseCase,
 )
 from app.modules.evaluation.application.preview_evaluation import PreviewEvaluationUseCase
+from app.modules.trading.application.evaluation_snapshot_mapping import build_evaluation_snapshot
 from app.modules.trading.domain.checklist_snapshot import ChecklistSnapshot
-from app.modules.trading.domain.evaluation_snapshot import (
-    EvaluationSnapshot,
-    EvaluationSnapshotBreakdown,
-)
+from app.modules.trading.domain.evaluation_snapshot import EvaluationSnapshot
 from app.modules.trading.domain.trade import OPEN, Trade
 from app.modules.trading.infrastructure.repository import (
     ChecklistSnapshotRepository,
@@ -77,8 +74,6 @@ from app.modules.trading.infrastructure.repository import (
 from app.platform.errors import UnprocessableEntityError
 from app.platform.events.base import DomainEvent
 from app.platform.events.dispatcher import EventDispatcher
-
-_GRADED_ENGINES = ("confidence", "quality", "execution", "market_context")
 
 
 class RegisterTradeResult:
@@ -174,25 +169,10 @@ class RegisterTradeUseCase:
             configuration_version_id=configuration_version.id,
         )
 
-        breakdowns: list[EvaluationSnapshotBreakdown] = []
-        for engine_type_code in _GRADED_ENGINES:
-            engine_result = getattr(evaluation_result, engine_type_code)
-            breakdowns.extend(_breakdown_rows(engine_type_code, engine_result.breakdown))
-        breakdowns.extend(_breakdown_rows("bias", evaluation_result.bias.breakdown))
-
-        evaluation_snapshot = EvaluationSnapshot(
+        evaluation_snapshot = build_evaluation_snapshot(
             trade_id=trade.id,
             configuration_version_id=configuration_version.id,
-            confidence_score=evaluation_result.confidence.score.value,
-            confidence_grade=_grade_value(evaluation_result.confidence.score.grade),
-            quality_score=evaluation_result.quality.score.value,
-            quality_grade=_grade_value(evaluation_result.quality.score.grade),
-            execution_score=evaluation_result.execution.score.value,
-            execution_grade=_grade_value(evaluation_result.execution.score.grade),
-            market_context_score=evaluation_result.market_context.score.value,
-            market_context_grade=_grade_value(evaluation_result.market_context.score.grade),
-            bias_score=evaluation_result.bias.score.value,
-            breakdowns=breakdowns,
+            evaluation_result=evaluation_result,
         )
 
         checklist_snapshot = ChecklistSnapshot(trade_id=trade.id, answers=answers)
@@ -245,22 +225,3 @@ class RegisterTradeUseCase:
             raise UnprocessableEntityError(
                 f"'{field_name}' references a catalog entry that does not exist or is inactive."
             )
-
-
-def _grade_value(grade: Any) -> str | None:
-    return grade.value if grade is not None else None
-
-
-def _breakdown_rows(engine_type_code: str, rows: list[Any]) -> list[EvaluationSnapshotBreakdown]:
-    return [
-        EvaluationSnapshotBreakdown(
-            criterion_id=row.criterion_id,
-            engine_type_code=engine_type_code,
-            criterion_name_at_time=row.criterion_name,
-            raw_value=row.raw_value,
-            normalized_value=row.normalized_value,
-            weight=row.weight,
-            contribution=row.contribution,
-        )
-        for row in rows
-    ]

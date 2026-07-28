@@ -13,7 +13,16 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.modules.trading.domain.trade import DIRECTIONS, OPEN, RESULTS
+from app.modules.trading.domain.trade import (
+    BREAK_EVEN,
+    DIRECTIONS,
+    OPEN,
+    RESULTS,
+    STOP_LOSS,
+    TAKE_PROFIT,
+)
+
+CLOSE_RESULTS = (TAKE_PROFIT, STOP_LOSS, BREAK_EVEN)
 
 
 class RegisterTradeRequest(BaseModel):
@@ -39,6 +48,50 @@ class RegisterTradeRequest(BaseModel):
     mfe_price: float | None = None
     mae_price: float | None = None
     checklist_answers: dict[str, str | float] = Field(default_factory=dict)
+
+
+class AmendTradeRequest(BaseModel):
+    """`PATCH /trades/{id}` (§6.4). Every field optional — only the ones
+    actually present in the request body are applied (the router reads
+    `model_dump(exclude_unset=True)`, never `model_dump()`, so an
+    omitted field is left untouched and an explicit `null` on a nullable
+    field like `strategy_id` still clears it).
+
+    Deliberately excludes `result`/`exit_price`/`closed_at` (`CloseTrade`'s
+    own responsibility, see `application/amend_trade.py`'s docstring for
+    the two citations behind this split) and `checklist_answers`
+    (`ReevaluateTrade` reloads the existing `ChecklistSnapshot`
+    "unchanged" — it has no PATCH-style edit path)."""
+
+    market: str | None = Field(default=None, max_length=20)
+    direction: str | None = Field(default=None, pattern="^(" + "|".join(DIRECTIONS) + ")$")
+    entry_price: float | None = None
+    stop_loss: float | None = None
+    size: float | None = None
+    leverage: str | None = None
+    notes: str | None = None
+    strategy_id: UUID | None = None
+    setup_id: UUID | None = None
+    session_id: UUID | None = None
+    entry_trigger_id: UUID | None = None
+    mfe_price: float | None = None
+    mae_price: float | None = None
+
+
+class CloseTradeRequest(BaseModel):
+    result: str = Field(pattern="^(" + "|".join(CLOSE_RESULTS) + ")$")
+    exit_price: float
+    mfe_price: float | None = None
+    mae_price: float | None = None
+
+
+class ReevaluateTradeRequest(BaseModel):
+    # Required — same approved reasoning as RegisterTradeRequest's own
+    # scoring_profile (Sprint 4.1), now applied identically here (Sprint
+    # 4.2): every call into Evaluation receives the same explicit input
+    # contract, never persisted, never defaulted. See CHANGELOG.md.
+    scoring_profile: str = Field(max_length=30)
+    configuration_version_id: UUID | None = None
 
 
 class CriterionBreakdownRowResponse(BaseModel):
