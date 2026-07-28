@@ -176,3 +176,98 @@ class TradeResponse(BaseModel):
     captured_pct: float | None
     potential_left_r: float | None
     evaluation: EvaluationSnapshotResponse
+
+
+class TradeDetailResponse(TradeResponse):
+    """`GET /trades/{id}` (§6.4): "full detail of one Trade... but not its
+    full historical breakdown" — reuses `TradeResponse`'s exact shape (the
+    current snapshot, breakdown included) and adds only what §7.4's own
+    contrast with the list view implies belongs to the single-resource
+    view specifically: `checklist_answers` ("fetched only via the
+    single-resource endpoint"). Deliberately a separate class from
+    `TradeResponse`, not an added field on it — `TradeResponse` is
+    `POST`/`PATCH`/`close`'s already-shipped response contract
+    (Sprints 4.1-4.2) and stays untouched."""
+
+    checklist_answers: dict[str, str | float]
+
+
+class GradedEngineSummaryResponse(BaseModel):
+    """The list view's lighter per-engine shape — score/grade only, no
+    breakdown rows (§7.4: `GET /trades` "omits evaluation_snapshot_
+    breakdowns... to keep list responses cheap")."""
+
+    score: float | None
+    grade: str | None
+
+
+class BiasEngineSummaryResponse(BaseModel):
+    score: float | None
+
+
+class EvaluationSnapshotSummaryResponse(BaseModel):
+    confidence: GradedEngineSummaryResponse
+    quality: GradedEngineSummaryResponse
+    execution: GradedEngineSummaryResponse
+    market_context: GradedEngineSummaryResponse
+    bias: BiasEngineSummaryResponse
+
+
+class TradeSummaryResponse(BaseModel):
+    """`GET /trades` list item (§7.4): "a lighter shape than the full
+    detail view — omits evaluation_snapshot_breakdowns and
+    checklist_answers." Every other Trade fact `TradeResponse` exposes is
+    still present -- only the breakdown rows and the raw checklist are
+    dropped."""
+
+    id: UUID
+    market: str
+    direction: str
+    entry_price: float
+    stop_loss: float
+    exit_price: float | None
+    size: float
+    leverage: str
+    result: str
+    realized_pnl: float
+    mfe_price: float | None
+    mae_price: float | None
+    notes: str
+    strategy_id: UUID | None
+    setup_id: UUID | None
+    session_id: UUID | None
+    entry_trigger_id: UUID | None
+    entered_at: datetime
+    closed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    r_multiple: float | None
+    mfe_r: float | None
+    mae_r: float | None
+    captured_pct: float | None
+    potential_left_r: float | None
+    evaluation: EvaluationSnapshotSummaryResponse
+
+
+class PaginationMeta(BaseModel):
+    next_cursor: str | None
+    has_more: bool
+
+
+class PaginatedTradesResponse(BaseModel):
+    """The one pagination envelope shape (§7.4), applied here to Trades —
+    `{"data": [...], "pagination": {"next_cursor": ..., "has_more": ...}}`."""
+
+    data: list[TradeSummaryResponse]
+    pagination: PaginationMeta
+
+
+class EvaluationHistoryEntryResponse(EvaluationSnapshotResponse):
+    """`GET /trades/{id}/evaluation/history` (§6.5): "shaped like
+    Section 6.5's single-snapshot response plus `is_current` and
+    `created_at`" -- and, per that same endpoint's own purpose statement,
+    "each tagged with which configuration_version_id produced it.\" """
+
+    is_current: bool
+    created_at: datetime
+    configuration_version_id: UUID

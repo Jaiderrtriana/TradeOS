@@ -2,12 +2,13 @@
 Trading presentation: `POST /trades` (Sprint 4.1); `PATCH /trades/{id}`,
 `POST /trades/{id}/close`, `POST /trades/{id}/reevaluate`,
 `DELETE /trades/{id}` (Sprint 4.2); `POST /trades/{id}/mistakes`
-(Sprint 4.3) — `TRADEOS_API_SPECIFICATION.md` §6.4. `GET /trades`,
-`GET /trades/{id}`, `GET /trades/{id}/mistakes`, and
-`DELETE /trades/{id}/mistakes/{catalogEntryId}` remain out of scope,
-confirmed for Sprint 4.3 (deferred to whichever sprint first names them
-explicitly — same "Master Plan Objectives, not the API surface, define
-sprint scope" reasoning already applied in Sprint 4.2).
+(Sprint 4.3); `GET /trades`, `GET /trades/{id}`,
+`GET /trades/{id}/evaluation`, `GET /trades/{id}/evaluation/history`
+(read-endpoint gap closed ahead of Sprint 4.4, approved) —
+`TRADEOS_API_SPECIFICATION.md` §6.4/§6.5. `GET /trades/{id}/mistakes` and
+`DELETE /trades/{id}/mistakes/{catalogEntryId}` remain out of scope —
+same "Master Plan Objectives, not the API surface, define sprint scope"
+reasoning already applied in Sprint 4.2/4.3.
 
 `Idempotency-Key` (optional header, §3.6) is handled here, at the router,
 via the generic `app/platform/idempotency.py` helper — a cross-cutting
@@ -20,9 +21,10 @@ without a network-retry "double-logging" risk POST /trades has for a
 brand-new aggregate root).
 """
 
+from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, Header, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +40,12 @@ from app.modules.evaluation.application.preview_evaluation import (
 from app.modules.trading.application.amend_trade import AmendTradeUseCase
 from app.modules.trading.application.close_trade import CloseTradeUseCase
 from app.modules.trading.application.delete_trade import DeleteTradeUseCase
+from app.modules.trading.application.get_trade import GetTradeUseCase
+from app.modules.trading.application.get_trade_evaluation import GetTradeEvaluationUseCase
+from app.modules.trading.application.get_trade_evaluation_history import (
+    GetTradeEvaluationHistoryUseCase,
+)
+from app.modules.trading.application.list_trades import ListTradesUseCase
 from app.modules.trading.application.reevaluate_trade import ReevaluateTradeUseCase
 from app.modules.trading.application.register_trade import RegisterTradeUseCase
 from app.modules.trading.application.tag_mistake import TagMistakeUseCase
@@ -49,18 +57,27 @@ from app.modules.trading.infrastructure.repository import (
     TradeMistakeRepository,
     TradeRepository,
 )
+from app.modules.trading.presentation.pagination import decode_trade_cursor, encode_trade_cursor
 from app.modules.trading.presentation.schemas import (
     AmendTradeRequest,
     BiasEngineResultResponse,
+    BiasEngineSummaryResponse,
     CloseTradeRequest,
     CriterionBreakdownRowResponse,
+    EvaluationHistoryEntryResponse,
     EvaluationSnapshotResponse,
+    EvaluationSnapshotSummaryResponse,
     GradedEngineResultResponse,
+    GradedEngineSummaryResponse,
+    PaginatedTradesResponse,
+    PaginationMeta,
     ReevaluateTradeRequest,
     RegisterTradeRequest,
     TagMistakeRequest,
+    TradeDetailResponse,
     TradeMistakeResponse,
     TradeResponse,
+    TradeSummaryResponse,
 )
 from app.platform.db.session import get_db_session
 from app.platform.events.dispatcher import dispatcher
@@ -70,6 +87,7 @@ from app.platform.idempotency import (
     claim_idempotency_key,
     store_idempotent_response,
 )
+from app.platform.errors import UnprocessableEntityError
 from app.platform.security.dependencies import get_current_user_id
 
 router = APIRouter(prefix="/trades", tags=["trading"])
@@ -130,6 +148,117 @@ async def register_trade(
 
     await session.commit()
     return response
+
+
+@router.get("", response_model=PaginatedTradesResponse)
+async def list_trades(
+    session: AsyncSession = Depends(get_db_session),
+    user_id: UUID = Depends(get_current_user_id),
+    direction: str | None = None,
+    result: str | None = None,
+    entered_after: datetime | None = None,
+    entered_before: datetime | None = None,
+    strategy_id: UUID | None = None,
+    setup_id: UUID | None = None,
+    session_id: UUID | None = None,
+    entry_trigger_id: UUID | None = None,
+    sort: str = "-entered_at",
+    cursor: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> PaginatedTradesResponse:
+    if sort == "-entered_at":
+        sort_descending = True
+    elif sort == "entered_at":
+        sort_descending = False
+    else:
+        # `entered_at` is the only sort field any document names for
+        # Trades (§7.1's own literal example, §7.2's documented default)
+        # -- no other field is invented here.
+        raise UnprocessableEntityError(f"Unsupported sort field: '{sort}'.")
+
+    decoded_cursor = decode_trade_cursor(cursor) if cursor is not None else None
+
+    use_case = ListTradesUseCase(TradeRepository(session))
+    # Fetches one extra row to detect `has_more` without a separate COUNT
+    # query -- the extra row is trimmed below, never returned.
+    trades = await use_case.execute(
+        user_id,
+        direction=direction,
+        result=result,
+        entered_after=entered_after,
+        entered_before=entered_before,
+        strategy_id=strategy_id,
+        setup_id=setup_id,
+        session_id=session_id,
+        entry_trigger_id=entry_trigger_id,
+        sort_descending=sort_descending,
+        cursor=decoded_cursor,
+        limit=limit + 1,
+    )
+    has_more = len(trades) > limit
+    page = trades[:limit]
+
+    evaluations_by_trade_id = await EvaluationSnapshotRepository(session).list_current_by_trade_ids(
+        [trade.id for trade in page]
+    )
+
+    next_cursor = (
+        encode_trade_cursor(page[-1].entered_at, page[-1].id) if has_more and page else None
+    )
+
+    # Indexed directly, never filtered defensively: every Trade owns
+    # exactly one current EvaluationSnapshot (maintained since
+    # RegisterTrade) -- a missing entry here would be a genuine
+    # data-integrity bug, and should fail loudly (KeyError -> 500) rather
+    # than silently omit a real Trade from the caller's list.
+    return PaginatedTradesResponse(
+        data=[_trade_summary_response(trade, evaluations_by_trade_id[trade.id]) for trade in page],
+        pagination=PaginationMeta(next_cursor=next_cursor, has_more=has_more),
+    )
+
+
+@router.get("/{trade_id}", response_model=TradeDetailResponse)
+async def get_trade(
+    trade_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+    user_id: UUID = Depends(get_current_user_id),
+) -> TradeDetailResponse:
+    use_case = GetTradeUseCase(
+        TradeRepository(session),
+        ChecklistSnapshotRepository(session),
+        EvaluationSnapshotRepository(session),
+    )
+    result = await use_case.execute(trade_id, user_id)
+    return TradeDetailResponse(
+        **_trade_response(result.trade, result.evaluation).model_dump(),
+        checklist_answers=result.checklist_snapshot.answers,
+    )
+
+
+@router.get("/{trade_id}/evaluation", response_model=EvaluationSnapshotResponse)
+async def get_trade_evaluation(
+    trade_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+    user_id: UUID = Depends(get_current_user_id),
+) -> EvaluationSnapshotResponse:
+    use_case = GetTradeEvaluationUseCase(
+        TradeRepository(session), EvaluationSnapshotRepository(session)
+    )
+    snapshot = await use_case.execute(trade_id, user_id)
+    return _evaluation_response(snapshot)
+
+
+@router.get("/{trade_id}/evaluation/history", response_model=list[EvaluationHistoryEntryResponse])
+async def get_trade_evaluation_history(
+    trade_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+    user_id: UUID = Depends(get_current_user_id),
+) -> list[EvaluationHistoryEntryResponse]:
+    use_case = GetTradeEvaluationHistoryUseCase(
+        TradeRepository(session), EvaluationSnapshotRepository(session)
+    )
+    snapshots = await use_case.execute(trade_id, user_id)
+    return [_evaluation_history_entry_response(snapshot) for snapshot in snapshots]
 
 
 @router.patch("/{trade_id}", response_model=TradeResponse)
@@ -318,4 +447,70 @@ def _evaluation_response(snapshot: EvaluationSnapshot) -> EvaluationSnapshotResp
             score=snapshot.bias_score,
             breakdown=breakdown_by_engine["bias"],
         ),
+    )
+
+
+def _evaluation_history_entry_response(
+    snapshot: EvaluationSnapshot,
+) -> EvaluationHistoryEntryResponse:
+    base = _evaluation_response(snapshot)
+    return EvaluationHistoryEntryResponse(
+        **base.model_dump(),
+        is_current=snapshot.is_current,
+        created_at=snapshot.created_at,
+        configuration_version_id=snapshot.configuration_version_id,
+    )
+
+
+def _evaluation_summary_response(snapshot: EvaluationSnapshot) -> EvaluationSnapshotSummaryResponse:
+    """`snapshot` here always comes from `EvaluationSnapshotRepository.
+    list_current_by_trade_ids()`, whose own docstring guarantees
+    `.breakdowns` is always `[]` for this read path -- never read from
+    here, only score/grade."""
+    return EvaluationSnapshotSummaryResponse(
+        confidence=GradedEngineSummaryResponse(
+            score=snapshot.confidence_score, grade=snapshot.confidence_grade
+        ),
+        quality=GradedEngineSummaryResponse(
+            score=snapshot.quality_score, grade=snapshot.quality_grade
+        ),
+        execution=GradedEngineSummaryResponse(
+            score=snapshot.execution_score, grade=snapshot.execution_grade
+        ),
+        market_context=GradedEngineSummaryResponse(
+            score=snapshot.market_context_score, grade=snapshot.market_context_grade
+        ),
+        bias=BiasEngineSummaryResponse(score=snapshot.bias_score),
+    )
+
+
+def _trade_summary_response(trade: Trade, evaluation: EvaluationSnapshot) -> TradeSummaryResponse:
+    return TradeSummaryResponse(
+        id=trade.id,
+        market=trade.market,
+        direction=trade.direction,
+        entry_price=trade.entry_price,
+        stop_loss=trade.stop_loss,
+        exit_price=trade.exit_price,
+        size=trade.size,
+        leverage=trade.leverage,
+        result=trade.result,
+        realized_pnl=trade.realized_pnl,
+        mfe_price=trade.mfe_price,
+        mae_price=trade.mae_price,
+        notes=trade.notes,
+        strategy_id=trade.strategy_id,
+        setup_id=trade.setup_id,
+        session_id=trade.session_id,
+        entry_trigger_id=trade.entry_trigger_id,
+        entered_at=trade.entered_at,
+        closed_at=trade.closed_at,
+        created_at=trade.created_at,
+        updated_at=trade.updated_at,
+        r_multiple=trade.r_multiple,
+        mfe_r=trade.mfe_r,
+        mae_r=trade.mae_r,
+        captured_pct=trade.captured_pct,
+        potential_left_r=trade.potential_left_r,
+        evaluation=_evaluation_summary_response(evaluation),
     )

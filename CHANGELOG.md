@@ -2451,3 +2451,97 @@ that names them.
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Trading read endpoints — `GET /trades`, `GET /trades/{id}`, `GET /trades/{id}/evaluation`, `GET /trades/{id}/evaluation/history`
+
+Closed ahead of Sprint 4.4 (Trading Frontend), by explicit approval, after an
+Architecture Readiness Review surfaced a real gap in the Master Plan's own
+dependency chain: Sprint 4.4's *Objectives* (Trades List, Trade Detail, the
+Rule Explorer) are unbuildable without these four read endpoints, but no
+sprint (4.1–4.3, all writes) ever claimed them, and Sprint 4.2 had
+explicitly deferred `GET /trades`/`GET /trades/{id}` "to whichever sprint
+first needs them" — this is that sprint. `TRADEOS_API_SPECIFICATION.md`
+§6.4/§6.5/§7. Pure reads: no new migration, no change to any write action's
+already-approved behavior or response contract.
+
+### Response shapes — a new detail/summary split, not a contract break
+
+- **`GET /trades/{id}` → `TradeDetailResponse`**: a new class, not an added
+  field on `TradeResponse`. `TradeResponse` remains exactly `POST`/`PATCH`/
+  `close`'s already-shipped contract (Sprints 4.1–4.2), untouched.
+  `TradeDetailResponse` reuses that same shape and adds only
+  `checklist_answers` — §7.4's own contrast with the list view ("list...
+  omits... checklist_answers, which are fetched only via the
+  single-resource endpoint") is the literal basis for putting it here and
+  nowhere else.
+- **`GET /trades` → `TradeSummaryResponse`**: every Trade fact
+  `TradeResponse` exposes, minus `checklist_answers`, with a *lighter*
+  nested evaluation shape (`EvaluationSnapshotSummaryResponse`: score+grade
+  per engine, no breakdown rows) — §7.4, literally: "omits
+  evaluation_snapshot_breakdowns and checklist_answers... to keep list
+  responses cheap."
+- **`GET /trades/{id}/evaluation/history` → `EvaluationHistoryEntryResponse`**:
+  the existing `EvaluationSnapshotResponse` shape (full breakdown) plus
+  `is_current`, `created_at`, `configuration_version_id` — §6.5, literally:
+  "shaped like Section 6.5's single-snapshot response plus `is_current` and
+  `created_at`," each entry "tagged with which `configuration_version_id`
+  produced it."
+
+### Pagination — real keyset, not offset dressed up as a cursor
+
+`?cursor=` is documented as opaque to the client (§7.4 never specifies its
+internal shape) — this implementation encodes it as base64 JSON of the
+keyset tuple `(entered_at, id)` `TradeRepository.list_all` filters on,
+decoded and validated in `presentation/pagination.py` (`422` on a corrupt
+cursor). Deliberately never an offset internally: §7.4 explicitly rejects
+offset pagination ("produces incorrect results under concurrent writes"),
+so a page boundary is always a `WHERE` predicate on the last row's own sort
+key. `has_more` is detected by fetching `limit + 1` rows and trimming the
+extra one, avoiding a separate `COUNT` query. `entered_at` is the only sort
+field implemented — the one literal example given (§7.1) and the
+documented default (§7.2); no other sort field is named anywhere for
+Trades, so none is invented.
+
+### N+1 discipline
+
+`GET /trades` needs the *current* `EvaluationSnapshot` of every Trade on
+the page — `EvaluationSnapshotRepository.list_current_by_trade_ids()`
+fetches all of them in one query (`trade_id IN (...)`), never one query per
+row. `GET /trades/{id}/evaluation/history` fetches every snapshot for a
+Trade in one query and every one of their breakdown rows in a second
+(grouped in Python by `evaluation_snapshot_id`), never one breakdown query
+per snapshot — same discipline `EvaluationSnapshotRepository.get_current_
+by_trade_id()` already established in Sprint 4.1.
+
+### Added
+- `backend/app/modules/trading/application/{list_trades,get_trade,
+  get_trade_evaluation,get_trade_evaluation_history}.py`.
+- `backend/app/modules/trading/presentation/pagination.py`.
+- `TradeRepository.list_all`, `EvaluationSnapshotRepository.
+  {list_by_trade_id,list_current_by_trade_ids}` in Trading's existing
+  `infrastructure/repository.py`.
+- `TradeDetailResponse`, `TradeSummaryResponse`,
+  `EvaluationSnapshotSummaryResponse`, `PaginatedTradesResponse`,
+  `EvaluationHistoryEntryResponse` in Trading's existing `presentation/
+  schemas.py`; the four new `GET` routes in `presentation/router.py`.
+- Tests: `tests/trading/test_trade_reads_flow.py` (14 HTTP-level
+  integration tests: empty list, summary shape/ordering, direction/result
+  filtering, cursor pagination across two pages with no overlap, ownership
+  scoping, authentication required, full detail with `checklist_answers`,
+  404 for not-found/not-owned/soft-deleted, current-evaluation shape,
+  evaluation history ordering with correct `is_current`/
+  `configuration_version_id` per entry).
+
+### Verification performed
+- `pytest` (full suite) — **234 passed** (14 new; 220 carried over).
+- `ruff format --check` / `ruff check` / `mypy app` — clean (154 source
+  files).
+- No new migration — every read is over columns migration `0007` already
+  created.
+- Audit: zero `pyproject.toml` changes; `grep` confirms zero imports of
+  `evaluation.domain`/`evaluation.infrastructure` or
+  `configuration.domain`/`configuration.infrastructure` from `trading/`;
+  no TODO/FIXME in any new file; no N+1 (see above).
+
+### Confirmation
+No `git push` was run at any point.

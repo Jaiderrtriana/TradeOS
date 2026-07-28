@@ -14,9 +14,11 @@ actions).
 """
 
 import uuid
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.trading.domain.checklist_snapshot import ChecklistSnapshot
@@ -116,6 +118,98 @@ class TradeRepository:
         row.updated_at = trade.updated_at
         row.deleted_at = trade.deleted_at
 
+    async def list_all(
+        self,
+        *,
+        user_id: uuid.UUID,
+        direction: str | None = None,
+        result: str | None = None,
+        entered_after: datetime | None = None,
+        entered_before: datetime | None = None,
+        strategy_id: uuid.UUID | None = None,
+        setup_id: uuid.UUID | None = None,
+        session_id: uuid.UUID | None = None,
+        entry_trigger_id: uuid.UUID | None = None,
+        sort_descending: bool = True,
+        cursor: "TradeListCursor | None" = None,
+        limit: int = 50,
+    ) -> list[Trade]:
+        """`GET /trades` (`TRADEOS_API_SPECIFICATION.md` §6.4/§7). Keyset
+        (never offset) pagination on `(entered_at, id)` -- §7.4 explicitly
+        rejects offset pagination ("produces incorrect results under
+        concurrent writes"), so a page boundary is a `WHERE` predicate on
+        the last row's own sort key, never a `LIMIT/OFFSET` that a
+        concurrent insert could shift. `entered_at` is the only sort
+        field implemented -- the one literal example given (§7.1:
+        `sort=-entered_at`) and this table's own documented default
+        (§7.2); no other sort field is named anywhere for Trades, so none
+        is invented here.
+
+        Always scoped to `user_id` and `deleted_at IS NULL` -- ownership
+        (§4.6) and the same "soft-deleted behaves as excluded" convention
+        every Sprint 4.2 write action already applies.
+        """
+        query = select(TradeModel).where(
+            TradeModel.user_id == user_id, TradeModel.deleted_at.is_(None)
+        )
+        if direction is not None:
+            query = query.where(TradeModel.direction == direction)
+        if result is not None:
+            query = query.where(TradeModel.result == result)
+        if entered_after is not None:
+            query = query.where(TradeModel.entered_at >= entered_after)
+        if entered_before is not None:
+            query = query.where(TradeModel.entered_at <= entered_before)
+        if strategy_id is not None:
+            query = query.where(TradeModel.strategy_id == strategy_id)
+        if setup_id is not None:
+            query = query.where(TradeModel.setup_id == setup_id)
+        if session_id is not None:
+            query = query.where(TradeModel.session_id == session_id)
+        if entry_trigger_id is not None:
+            query = query.where(TradeModel.entry_trigger_id == entry_trigger_id)
+
+        if cursor is not None:
+            if sort_descending:
+                query = query.where(
+                    or_(
+                        TradeModel.entered_at < cursor.entered_at,
+                        and_(
+                            TradeModel.entered_at == cursor.entered_at,
+                            TradeModel.id < cursor.id,
+                        ),
+                    )
+                )
+            else:
+                query = query.where(
+                    or_(
+                        TradeModel.entered_at > cursor.entered_at,
+                        and_(
+                            TradeModel.entered_at == cursor.entered_at,
+                            TradeModel.id > cursor.id,
+                        ),
+                    )
+                )
+
+        if sort_descending:
+            query = query.order_by(TradeModel.entered_at.desc(), TradeModel.id.desc())
+        else:
+            query = query.order_by(TradeModel.entered_at.asc(), TradeModel.id.asc())
+
+        query = query.limit(limit)
+        result_rows = await self._session.execute(query)
+        return [_trade_to_domain(row) for row in result_rows.scalars()]
+
+
+@dataclass(frozen=True)
+class TradeListCursor:
+    """The opaque `?cursor=` value's decoded form -- see
+    `trading/presentation/pagination.py` for its base64/JSON encoding.
+    Kept as a plain keyset tuple `(entered_at, id)`, never an offset."""
+
+    entered_at: datetime
+    id: uuid.UUID
+
 
 class ChecklistSnapshotRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -211,6 +305,106 @@ class EvaluationSnapshotRepository:
             created_at=snapshot_row.created_at,
             breakdowns=breakdowns,
         )
+
+    async def list_current_by_trade_ids(
+        self, trade_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, EvaluationSnapshot]:
+        """`GET /trades`'s own batch read: one query for the current
+        snapshot of every Trade on the page, never one query per row
+        (N+1 avoidance, same discipline as `PreviewEvaluationUseCase`'s
+        own audited query count). Breakdown rows are deliberately never
+        fetched here -- §7.4: list summaries "omit
+        evaluation_snapshot_breakdowns... to keep list responses cheap"
+        -- so each returned `EvaluationSnapshot.breakdowns` is an empty
+        list; callers building a list-item response must only read the
+        score/grade fields, never `.breakdowns`, from this method's
+        result."""
+        if not trade_ids:
+            return {}
+        result = await self._session.execute(
+            select(EvaluationSnapshotModel).where(
+                EvaluationSnapshotModel.trade_id.in_(trade_ids),
+                EvaluationSnapshotModel.is_current.is_(True),
+            )
+        )
+        return {
+            row.trade_id: EvaluationSnapshot(
+                id=row.id,
+                trade_id=row.trade_id,
+                configuration_version_id=row.configuration_version_id,
+                confidence_score=_as_optional_float(row.confidence_score),
+                confidence_grade=row.confidence_grade,
+                quality_score=_as_optional_float(row.quality_score),
+                quality_grade=row.quality_grade,
+                execution_score=_as_optional_float(row.execution_score),
+                execution_grade=row.execution_grade,
+                market_context_score=_as_optional_float(row.market_context_score),
+                market_context_grade=row.market_context_grade,
+                bias_score=_as_optional_float(row.bias_score),
+                is_current=row.is_current,
+                created_at=row.created_at,
+                breakdowns=[],
+            )
+            for row in result.scalars()
+        }
+
+    async def list_by_trade_id(self, trade_id: uuid.UUID) -> list[EvaluationSnapshot]:
+        """`GET /trades/{id}/evaluation/history` (§6.5): "every Evaluation
+        Snapshot ever produced for this Trade... ordered newest first."
+        Exactly two queries regardless of how many snapshots or breakdown
+        rows exist -- one for every snapshot row, one for every breakdown
+        row across all of them (grouped in Python by `evaluation_snapshot_id`),
+        never one breakdown query per snapshot."""
+        snapshot_result = await self._session.execute(
+            select(EvaluationSnapshotModel)
+            .where(EvaluationSnapshotModel.trade_id == trade_id)
+            .order_by(EvaluationSnapshotModel.created_at.desc())
+        )
+        snapshot_rows = list(snapshot_result.scalars())
+        if not snapshot_rows:
+            return []
+
+        breakdown_result = await self._session.execute(
+            select(EvaluationSnapshotBreakdownModel).where(
+                EvaluationSnapshotBreakdownModel.evaluation_snapshot_id.in_(
+                    [row.id for row in snapshot_rows]
+                )
+            )
+        )
+        breakdowns_by_snapshot_id: dict[uuid.UUID, list[EvaluationSnapshotBreakdown]] = {}
+        for row in breakdown_result.scalars():
+            breakdowns_by_snapshot_id.setdefault(row.evaluation_snapshot_id, []).append(
+                EvaluationSnapshotBreakdown(
+                    criterion_id=row.criterion_id,
+                    engine_type_code=row.engine_type_code,
+                    criterion_name_at_time=row.criterion_name_at_time,
+                    raw_value=row.raw_value,
+                    normalized_value=_as_float(row.normalized_value),
+                    weight=_as_float(row.weight),
+                    contribution=_as_float(row.contribution),
+                )
+            )
+
+        return [
+            EvaluationSnapshot(
+                id=row.id,
+                trade_id=row.trade_id,
+                configuration_version_id=row.configuration_version_id,
+                confidence_score=_as_optional_float(row.confidence_score),
+                confidence_grade=row.confidence_grade,
+                quality_score=_as_optional_float(row.quality_score),
+                quality_grade=row.quality_grade,
+                execution_score=_as_optional_float(row.execution_score),
+                execution_grade=row.execution_grade,
+                market_context_score=_as_optional_float(row.market_context_score),
+                market_context_grade=row.market_context_grade,
+                bias_score=_as_optional_float(row.bias_score),
+                is_current=row.is_current,
+                created_at=row.created_at,
+                breakdowns=breakdowns_by_snapshot_id.get(row.id, []),
+            )
+            for row in snapshot_rows
+        ]
 
     async def mark_not_current(self, evaluation_snapshot_id: uuid.UUID) -> None:
         """Must be called -- and its flush observed -- *before* the new
