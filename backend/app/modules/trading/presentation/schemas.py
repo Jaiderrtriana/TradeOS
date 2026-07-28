@@ -94,6 +94,24 @@ class ReevaluateTradeRequest(BaseModel):
     configuration_version_id: UUID | None = None
 
 
+class TagMistakeRequest(BaseModel):
+    catalog_entry_id: UUID
+
+
+class TradeMistakeResponse(BaseModel):
+    """Mirrors `ScoringWeightResponse`'s own precedent for a junction/
+    association resource's create response (`POST /configuration/
+    versions/{id}/weights`) — the full shape of the created row, using
+    whichever key fields that row actually has. `trade_mistakes` has no
+    surrogate `id` (composite primary key, TRADEOS_DATABASE_DESIGN.md
+    §6.14), so `trade_id`/`catalog_entry_id` are that shape's own key,
+    not an invented one."""
+
+    trade_id: UUID
+    catalog_entry_id: UUID
+    created_at: datetime
+
+
 class CriterionBreakdownRowResponse(BaseModel):
     criterion_id: str
     criterion_name: str

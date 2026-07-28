@@ -2344,3 +2344,110 @@ explicit input contract.
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Sprint 4.3 — Mistake Tagging
+
+Phase 4, third sprint: `TagMistake` — `TRADEOS_BACKEND_BLUEPRINT.md`
+§4.6; `TRADEOS_API_SPECIFICATION.md` §6.4's `POST /trades/{id}/mistakes`.
+No new dependency, no new cross-module factory (reuses
+`build_get_catalog_entry_use_case`, already built in Sprint 4.1).
+
+### Scope, confirmed narrower than the full API surface
+
+`TRADEOS_API_SPECIFICATION.md` §6.4 groups three endpoints under
+"Mistakes on a Trade" (`GET`, `POST`, `DELETE`), but the Master Plan's
+Sprint 4.3 *Objectives* line names only `TagMistake` — same "Master Plan
+Objectives, not the documented API surface, define sprint scope"
+reasoning already applied to `GET /trades` in Sprint 4.2. Confirmed
+explicitly before implementation: only `POST /trades/{id}/mistakes`
+ships this sprint; `GET /trades/{id}/mistakes` (list) and
+`DELETE /trades/{id}/mistakes/{catalogEntryId}` (untag) wait for a sprint
+that names them.
+
+### Resolved by citation (no gap, no question needed)
+
+- **KDD-06's "exception" for Mistakes is about the legacy Excel/free-text
+  implementation, not this sprint's target.** `TRADEOS_DOMAIN_MODEL.md`
+  DI-09 flags Mistakes as the one place a Trade might reference a Catalog
+  entry by copied text instead of stable identity — but KDD-06 itself
+  clarifies this is acknowledged *technical debt* in the legacy code, and
+  that the **target** model (a proper `catalog_entry_id` reference,
+  exactly what `TRADEOS_DATABASE_DESIGN.md` §6.14's `trade_mistakes`
+  already specifies) is canonical. Implemented the identity-based target
+  model, not the legacy free-text one.
+- **No Open/Closed precondition on tagging.** §6.14's own text — "rows
+  may be added or removed while the Trade is `Open`; once `Closed`...
+  not blocked at the database level" — is explicitly registered as **Open
+  Question DB-2** (§14, priority Low): *"Domain Model does not specify
+  whether post-closure mistake tagging is a normal or a notable action."*
+  Backend Blueprint §4.6 names no such precondition either. Left exactly
+  as unresolved as the documents themselves — not invented here.
+- **Duplicate tag → `409 Conflict`, via the composite primary key, never
+  a "check then insert."** No document addresses a duplicate
+  `(trade_id, catalog_entry_id)` tag attempt directly, so this follows
+  the one directly comparable precedent already in this codebase —
+  `CreateCatalogEntryUseCase`'s own `(kind, name)` duplicate handling —
+  applying the same `IntegrityError` → `ConflictError` translation
+  `PublishScoringConfigurationVersionUseCase` already uses, rather than a
+  `SELECT`-first existence check (`ADR_CONFIGURATION_PUBLISH_RACE_
+  CONDITION.md`'s own lesson).
+- **No `Idempotency-Key`.** Not named for this endpoint by any document
+  (unlike `POST /trades`, explicit in Sprint 4.1). The composite primary
+  key already makes a duplicate request safe on its own; there is no
+  "network retry silently double-logs a new aggregate root" risk here,
+  since tagging isn't creating a new Trade.
+- **`201` response shape reuses an existing pattern, not an invented
+  one** (per explicit instruction this sprint): `POST /configuration/
+  versions/{id}/weights` is this codebase's own closest "junction/
+  association create" precedent, and it returns the full domain shape of
+  the created row (`ScoringWeightResponse`). `trade_mistakes` has no
+  surrogate `id` (composite primary key, §6.14), so the same pattern
+  adapted to its actual columns is `{trade_id, catalog_entry_id,
+  created_at}` — reusing the *pattern* (return the full created-row
+  shape), not inventing a new one to match a table with a different key
+  shape.
+
+### Architecture, as implemented
+
+- `trading.trade_mistakes` (migration `0009`) — deferred from migration
+  `0007` (Sprint 4.1), same precedent as `catalog_entries` (0005) being
+  its own migration separate from the rest of `configuration` (0004).
+  Composite primary key `(trade_id, catalog_entry_id)`, no surrogate
+  `id`, per §6.14 exactly.
+- `TradeMistake` (new domain value object, no invariants of its own —
+  `kind`/active-status validation happens in `TagMistakeUseCase` against
+  Configuration's own `CatalogEntry`, read via the existing factory).
+- `TagMistakeUseCase`: same 404 convention as every Sprint 4.2 write
+  action (not found / not owned / soft-deleted all identical); `kind`
+  compared against the literal string `"mistake_tag"` rather than
+  importing Configuration's domain constant — same structural-literal
+  precedent as `reevaluate_trade.py`'s own `PUBLISHED = "published"`.
+
+### Added
+- `backend/alembic/versions/0009_create_trade_mistakes.py`.
+- `backend/app/modules/trading/domain/trade_mistake.py`,
+  `application/tag_mistake.py`.
+- `TradeMistakeModel`/`TradeMistakeRepository` in Trading's existing
+  `infrastructure/{models,repository}.py`.
+- `POST /trades/{id}/mistakes` in Trading's existing `presentation/
+  {schemas,router}.py`.
+- Tests: `tests/trading/test_tag_mistake_flow.py` (8 HTTP-level
+  integration tests: successful tag, wrong `kind` rejected, inactive
+  entry rejected, missing catalog entry rejected, duplicate tag returns
+  `409`, Trade not found, Trade not owned, authentication required).
+
+### Verification performed
+- `pytest` (full suite) — **220 passed** (8 new; 212 carried over).
+- `ruff format --check` / `ruff check` / `mypy app` — clean (149 source
+  files).
+- Migration chain `0001` → `0009` verified against a fresh, disposable
+  Postgres container, plus a `downgrade` → `upgrade` round-trip for
+  `0009` specifically.
+- Audit: zero `pyproject.toml` changes; `grep` confirms zero imports of
+  `evaluation.domain`/`evaluation.infrastructure` or
+  `configuration.domain`/`configuration.infrastructure` from `trading/`;
+  no TODO/FIXME in any new file; no N+1 (`TagMistakeUseCase` is two
+  bounded reads plus one insert, regardless of any collection size).
+
+### Confirmation
+No `git push` was run at any point.

@@ -25,10 +25,12 @@ from app.modules.trading.domain.evaluation_snapshot import (
     EvaluationSnapshotBreakdown,
 )
 from app.modules.trading.domain.trade import Trade
+from app.modules.trading.domain.trade_mistake import TradeMistake
 from app.modules.trading.infrastructure.models import (
     ChecklistSnapshotModel,
     EvaluationSnapshotBreakdownModel,
     EvaluationSnapshotModel,
+    TradeMistakeModel,
     TradeModel,
 )
 
@@ -272,6 +274,27 @@ class EvaluationSnapshotRepository:
                     contribution=breakdown.contribution,
                 )
             )
+
+
+class TradeMistakeRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, trade_mistake: TradeMistake) -> None:
+        """No existence check first -- the composite primary key
+        `(trade_id, catalog_entry_id)` is the concurrency-safety
+        mechanism itself. A duplicate tag attempt raises `IntegrityError`
+        on flush, which `TagMistakeUseCase` translates to `ConflictError`
+        -- never a "SELECT to check, then INSERT" sequence (the exact
+        race `ADR_CONFIGURATION_PUBLISH_RACE_CONDITION.md` diagnosed and
+        fixed for Configuration's publish flow)."""
+        self._session.add(
+            TradeMistakeModel(
+                trade_id=trade_mistake.trade_id,
+                catalog_entry_id=trade_mistake.catalog_entry_id,
+                created_at=trade_mistake.created_at,
+            )
+        )
 
 
 def _as_float(value: Any) -> float:

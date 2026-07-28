@@ -130,3 +130,18 @@ class EvaluationSnapshotBreakdownModel(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
+
+
+class TradeMistakeModel(Base):
+    __tablename__ = "trade_mistakes"
+    __table_args__ = {"schema": "trading"}
+
+    trade_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("trading.trades.id"), primary_key=True
+    )
+    catalog_entry_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("configuration.catalog_entries.id"), primary_key=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )

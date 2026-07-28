@@ -1,17 +1,23 @@
 """
-Trading presentation: `POST /trades` (Sprint 4.1) plus `PATCH /trades/{id}`,
-`POST /trades/{id}/close`, `POST /trades/{id}/reevaluate`, and
-`DELETE /trades/{id}` (Sprint 4.2) — `TRADEOS_API_SPECIFICATION.md` §6.4.
-`GET /trades`, `GET /trades/{id}`, and the Mistakes sub-resource remain
-out of scope, confirmed for Sprint 4.2 (deferred to whichever sprint
-first needs them; Mistakes specifically belongs to Sprint 4.3).
+Trading presentation: `POST /trades` (Sprint 4.1); `PATCH /trades/{id}`,
+`POST /trades/{id}/close`, `POST /trades/{id}/reevaluate`,
+`DELETE /trades/{id}` (Sprint 4.2); `POST /trades/{id}/mistakes`
+(Sprint 4.3) — `TRADEOS_API_SPECIFICATION.md` §6.4. `GET /trades`,
+`GET /trades/{id}`, `GET /trades/{id}/mistakes`, and
+`DELETE /trades/{id}/mistakes/{catalogEntryId}` remain out of scope,
+confirmed for Sprint 4.3 (deferred to whichever sprint first names them
+explicitly — same "Master Plan Objectives, not the API surface, define
+sprint scope" reasoning already applied in Sprint 4.2).
 
 `Idempotency-Key` (optional header, §3.6) is handled here, at the router,
 via the generic `app/platform/idempotency.py` helper — a cross-cutting
 concern, not Trading-specific — and applies only to `POST /trades`
 (§3.6: "Every `POST` that creates a resource" — `PATCH`/`DELETE` are
-idempotent by HTTP method semantics already, and `close`/`reevaluate`
-are explicitly excluded: "never a `POST` that performs an action").
+idempotent by HTTP method semantics already, `close`/`reevaluate` are
+explicitly excluded, and `mistakes` needs no such mechanism either: its
+own composite primary key already makes a duplicate request safe,
+without a network-retry "double-logging" risk POST /trades has for a
+brand-new aggregate root).
 """
 
 from uuid import UUID
@@ -34,11 +40,13 @@ from app.modules.trading.application.close_trade import CloseTradeUseCase
 from app.modules.trading.application.delete_trade import DeleteTradeUseCase
 from app.modules.trading.application.reevaluate_trade import ReevaluateTradeUseCase
 from app.modules.trading.application.register_trade import RegisterTradeUseCase
+from app.modules.trading.application.tag_mistake import TagMistakeUseCase
 from app.modules.trading.domain.evaluation_snapshot import EvaluationSnapshot
 from app.modules.trading.domain.trade import Trade
 from app.modules.trading.infrastructure.repository import (
     ChecklistSnapshotRepository,
     EvaluationSnapshotRepository,
+    TradeMistakeRepository,
     TradeRepository,
 )
 from app.modules.trading.presentation.schemas import (
@@ -50,6 +58,8 @@ from app.modules.trading.presentation.schemas import (
     GradedEngineResultResponse,
     ReevaluateTradeRequest,
     RegisterTradeRequest,
+    TagMistakeRequest,
+    TradeMistakeResponse,
     TradeResponse,
 )
 from app.platform.db.session import get_db_session
@@ -192,6 +202,33 @@ async def delete_trade(
     use_case = DeleteTradeUseCase(TradeRepository(session))
     await use_case.execute(trade_id, user_id)
     await session.commit()
+
+
+@router.post(
+    "/{trade_id}/mistakes",
+    response_model=TradeMistakeResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def tag_mistake(
+    trade_id: UUID,
+    payload: TagMistakeRequest,
+    session: AsyncSession = Depends(get_db_session),
+    user_id: UUID = Depends(get_current_user_id),
+) -> TradeMistakeResponse:
+    use_case = TagMistakeUseCase(
+        TradeRepository(session),
+        TradeMistakeRepository(session),
+        build_get_catalog_entry_use_case(session),
+        dispatcher,
+        session,
+    )
+    trade_mistake = await use_case.execute(trade_id, user_id, payload.catalog_entry_id)
+    await session.commit()
+    return TradeMistakeResponse(
+        trade_id=trade_mistake.trade_id,
+        catalog_entry_id=trade_mistake.catalog_entry_id,
+        created_at=trade_mistake.created_at,
+    )
 
 
 async def _require_current_evaluation(session: AsyncSession, trade_id: UUID) -> EvaluationSnapshot:
