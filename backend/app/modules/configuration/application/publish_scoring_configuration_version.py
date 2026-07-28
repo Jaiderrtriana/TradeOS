@@ -12,6 +12,19 @@ transaction (the router commits once, after execute() returns) — a state
 with two "published" versions or zero would itself be a Domain Invariant
 violation (DI-06/DI-07).
 
+Concurrency (`ADR_CONFIGURATION_PUBLISH_RACE_CONDITION.md`, approved):
+`self._versions.lock_for_publish()` is acquired *before* reading
+`get_published()`, so two concurrent `execute()` calls can never both read
+the same "currently published" state and each independently decide what
+to supersede — the second caller blocks until the first commits, then
+reads the true, already-updated state. `ix_scoring_configuration_versions
+_one_published` (migration 0006) is the structural backstop: if the
+`IntegrityError` it raises is ever hit anyway (the lock was bypassed, or
+two rows already violated the invariant before this fix), it is caught
+below and translated to the same `ConflictError` (409) this Use Case
+already returns for "already published/superseded" — a new *reason* for
+an existing response shape, not a new one.
+
 Explicitly Not Triggered: any re-evaluation of existing Trades — that is
 `ReevaluateTrade` (Phase 4), a separate, explicit per-Trade action.
 """
@@ -19,6 +32,7 @@ Explicitly Not Triggered: any re-evaluation of existing Trades — that is
 from datetime import datetime, timezone
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.configuration.domain.scoring_configuration_version import (
@@ -70,15 +84,31 @@ class PublishScoringConfigurationVersionUseCase:
                     f"Cannot publish: criterion '{weight.criterion_id}' is inactive or missing."
                 )
 
+        # Must be acquired before the read below — see module docstring.
+        await self._versions.lock_for_publish()
         previously_published = await self._versions.get_published()
+
+        # Supersede the old version *before* publishing the new one — not
+        # just for clarity. `ix_scoring_configuration_versions_one_published`
+        # is a plain (non-deferrable) constraint, checked immediately after
+        # each UPDATE, not batched at commit — publishing the new version
+        # first would momentarily leave *two* rows `published` within this
+        # same transaction (the old one not yet superseded), tripping the
+        # constraint before this method ever reaches its own supersede
+        # step. Superseding first means the row count only ever goes
+        # 1 -> 0 -> 1, never 2, at every intermediate point.
+        if previously_published is not None:
+            previously_published.status = SUPERSEDED
+            await self._versions.update_status(previously_published)
 
         version.status = PUBLISHED
         version.published_at = datetime.now(timezone.utc)
         await self._versions.update_status(version)
 
-        if previously_published is not None:
-            previously_published.status = SUPERSEDED
-            await self._versions.update_status(previously_published)
+        try:
+            await self._session.flush()
+        except IntegrityError as exc:
+            raise ConflictError("Another publish just happened. Refresh and try again.") from exc
 
         await self._dispatcher.publish(
             DomainEvent(

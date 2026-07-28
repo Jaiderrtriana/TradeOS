@@ -7,6 +7,15 @@ point" is explicitly named as "an implementation convenience, not a
 business rule this document mandates" (§6.6) — so an absent published
 version (e.g., the very first version ever created) is not an error, it
 simply means nothing is copied forward.
+
+Concurrency (`ADR_CONFIGURATION_PUBLISH_RACE_CONDITION.md`, approved):
+the copy-forward read below is the *other* half of the race the ADR
+describes — without `lock_for_publish()`, a draft created while a publish
+is concurrently in flight could silently copy from a version that's
+already been (or is about to be) superseded, with no error at all. Taking
+the same lock `PublishScoringConfigurationVersionUseCase` takes serializes
+"decide what to copy from" against "change what's published," so this
+always reads the true current state.
 """
 
 import uuid
@@ -45,6 +54,8 @@ class CreateDraftConfigurationVersionUseCase:
         )
         await self._versions.add(draft)
 
+        # Must be acquired before the read below — see module docstring.
+        await self._versions.lock_for_publish()
         published = await self._versions.get_published()
         if published is not None:
             for weight in await self._weights.list_by_version(published.id):

@@ -1847,3 +1847,115 @@ fixes).
   `features/evaluation/*` in either direction; `EvaluationPreviewForm`
   takes no props and is rendered unchanged by `EvaluationPage`, confirming
   it is embeddable elsewhere without modification.
+
+## Technical debt closed — Configuration publish race condition
+
+Implements `ADR_CONFIGURATION_PUBLISH_RACE_CONDITION.md` in full (reviewed
+and approved before any code was written) — the concurrent-publish race
+discovered and documented, not fixed, during Sprint 3.3. Backend-only; no
+REST contract change, no new dependency, no frontend change.
+
+### What shipped, exactly as approved in the ADR
+
+1. **`alembic/versions/0006_scoring_configuration_publish_uniqueness.py`**
+   — a partial unique index,
+   `CREATE UNIQUE INDEX ix_scoring_configuration_versions_one_published ON
+   configuration.scoring_configuration_versions ((true)) WHERE status =
+   'published'`, the same idiom already specified for
+   `evaluation_snapshots.trade_id WHERE is_current = true`
+   (`TRADEOS_DATABASE_DESIGN.md` §6.12). Preceded by an idempotent data
+   -repair step (keep the most-recently-`published_at` row, supersede any
+   others) so `upgrade()` succeeds even against a database already
+   corrupted by the race this migration closes — verified directly: ran
+   against the real local dev database (which still had leftover
+   corruption-turned-single-row state from Sprint 3.3's manual repair)
+   and, separately, against a throwaway Postgres from a fully empty
+   history (`alembic upgrade head` from `0001`), plus a full
+   downgrade/upgrade cycle.
+2. **`ScoringConfigurationVersionRepository.lock_for_publish()`** — a
+   `pg_advisory_xact_lock`, not a `SELECT ... FOR UPDATE` on the
+   currently-published row: that row's *identity* changes on every
+   publish, so a lock tied to "whichever row currently matches
+   `status='published'`" can go stale the instant a concurrent
+   transaction changes which row that is (a transaction that blocked on
+   the *old* published row isn't guaranteed to notice the *new* one once
+   unblocked). An advisory lock keyed by a fixed constant has no such
+   identity-shift problem — see the method's own docstring for the full
+   reasoning, since this is exactly the kind of subtlety worth being able
+   to re-derive later. Transaction-scoped (`_xact_lock`): released
+   automatically on commit or rollback, no separate unlock call.
+3. **`PublishScoringConfigurationVersionUseCase`** — acquires the lock
+   before reading `get_published()`; supersedes the previously-published
+   version *before* publishing the new one (reordered from the original
+   code — see "bug found and fixed" below); catches `IntegrityError` from
+   the explicit `session.flush()` and translates it to the same
+   `ConflictError` (409) this Use Case already returns for "already
+   published/superseded" — a new *reason* for an existing response shape,
+   not a new one, so the REST contract is unchanged.
+4. **`CreateDraftConfigurationVersionUseCase`** — takes the same lock
+   before its own "copy forward the published version's weights" read,
+   closing the ADR's second failure mode (a new draft silently seeded
+   from a version that's already been, or is about to be, superseded).
+
+### Bug found and fixed during implementation (not anticipated in the ADR)
+
+The first version of the `PublishScoringConfigurationVersionUseCase` fix
+published the new version *before* superseding the old one. Two
+concurrent publishes, correctly serialized by the lock, still failed:
+the *second* transaction's own flush hit
+`ix_scoring_configuration_versions_one_published` immediately, because
+for one statement mid-transaction *its own* newly-published row and the
+old, not-yet-superseded row were simultaneously `published` — a
+self-conflict, not a cross-transaction one. `ix_scoring_configuration
+_versions_one_published` is a plain, non-deferrable constraint: Postgres
+checks it immediately after each `UPDATE`, not batched at commit. Fixed
+by superseding first, publishing second, so the published-row count only
+ever moves 1 → 0 → 1 within a transaction, never 2. Caught immediately by
+`test_concurrent_publishes_serialize_instead_of_both_committing` (below)
+— exactly the kind of regression the ADR asked these tests to guard
+against, working as intended on the first real bug it found.
+
+### Added
+- `tests/configuration/test_publish_concurrency.py` — three tests against
+  a dedicated, isolated Postgres container (this suite asserts a *global*
+  invariant, meaningless to check against a database other tests are
+  concurrently publishing into), using real, independent database
+  sessions run via `asyncio.gather` — not a sequential simulation:
+  - `test_concurrent_publishes_serialize_instead_of_both_committing` —
+    two drafts published at the same instant; asserts neither call
+    crashes, exactly one row ends up `published`, and any exception
+    surfaced is the documented `ConflictError`, never a raw
+    `MultipleResultsFound` or `IntegrityError`.
+  - `test_partial_unique_index_rejects_a_second_published_row_at_the_database_level`
+    — a direct-SQL check independent of the application lock: even
+    bypassing both Use Cases entirely, the database itself refuses a
+    second `published` row.
+  - `test_concurrent_create_draft_never_copies_a_torn_mix_of_two_versions`
+    — the ADR's other failure mode: a new draft's copy-forward racing a
+    concurrent publish; asserts the draft always ends up with exactly one
+    real version's weights, never a torn mix of both and never neither.
+
+### Verification performed
+- `pytest` (full suite) — **167 passed** (3 new; 164 carried over). One
+  unrelated, pre-existing flaky failure observed once
+  (`test_jwt.py::test_tampered_signature_is_rejected`) and confirmed
+  non-reproducing on immediate re-run, in isolation and in the full suite
+  again — not a regression from this work (the same flake already noted
+  in Sprint 3.2's and 3.3's own verification sections).
+- `ruff format` / `ruff check` / `mypy` — clean (mypy's two findings are
+  the same pre-existing, unrelated ones noted throughout this project).
+- Migration verified three ways: applied to the real local dev database
+  (already-corrupted-then-manually-repaired state from Sprint 3.3);
+  applied to a fully empty database from `0001` through `0006`; a full
+  `downgrade` → `upgrade` cycle confirmed the index is correctly dropped
+  and recreated.
+- Audit: zero `pyproject.toml` changes (no new dependency); zero new
+  cross-module imports (`grep` confirms `configuration` still imports no
+  other business module); no new N+1 — `lock_for_publish()` adds exactly
+  one query per `execute()` call in each of the two affected Use Cases,
+  not one per item; no REST contract change (`ConflictError` already
+  existed as this Use Case's 409 response shape, only a new trigger for
+  it).
+
+### Confirmation
+No `git push` was run at any point.

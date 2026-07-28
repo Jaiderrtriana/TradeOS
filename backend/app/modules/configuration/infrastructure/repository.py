@@ -9,7 +9,7 @@ Identity/Preferences no cross-module factory is needed here yet.
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.configuration.domain.catalog_entry import CatalogEntry
@@ -126,6 +126,14 @@ class ScoringCriterionRepository:
         row.updated_at = criterion.updated_at
 
 
+# Arbitrary, fixed key identifying "the scoring_configuration_versions
+# publish operation" for pg_advisory_xact_lock — see
+# ScoringConfigurationVersionRepository.lock_for_publish(). Any int8 value
+# works; this one has no meaning beyond being stable and unique among
+# whatever other advisory locks this codebase may add in the future.
+_PUBLISH_LOCK_KEY = 554_100_1
+
+
 class ScoringConfigurationVersionRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -147,6 +155,41 @@ class ScoringConfigurationVersionRepository:
         )
         row = result.scalar_one_or_none()
         return _version_to_domain(row) if row is not None else None
+
+    async def lock_for_publish(self) -> None:
+        """Serializes every read-then-write "what is currently published"
+        sequence (`PublishScoringConfigurationVersionUseCase`,
+        `CreateDraftConfigurationVersionUseCase`'s copy-forward) against
+        every other concurrent one —
+        `ADR_CONFIGURATION_PUBLISH_RACE_CONDITION.md` §5.
+
+        A `pg_advisory_xact_lock` rather than `SELECT ... FOR UPDATE` on
+        the currently-published row deliberately: the published row's
+        *identity* changes on every publish (a different row each time),
+        so a lock tied to "whichever row currently matches
+        `status='published'`" can itself go stale the instant a
+        concurrent transaction changes which row that is — a transaction
+        that blocked on the *old* published row is not guaranteed to
+        re-examine the *new* one once unblocked. An advisory lock keyed
+        by a fixed constant has no such identity-shift problem: every
+        concurrent caller contends for the exact same lock regardless of
+        which rows are involved, and each one only proceeds to actually
+        read `get_published()` once it holds the lock — guaranteeing that
+        read reflects every previously-committed publish, not a
+        pre-lock snapshot. Held for the remainder of the current
+        transaction only (`_xact_lock`), released automatically on
+        commit or rollback — no separate unlock call needed.
+
+        `ix_scoring_configuration_versions_one_published` (migration
+        0006) remains the structural backstop even if this lock is ever
+        bypassed (a future direct-SQL script, a bug) — this method makes
+        the common case race-free without blocking on it; the index
+        makes the invariant impossible to violate regardless.
+        """
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"),
+            {"key": _PUBLISH_LOCK_KEY},
+        )
 
     async def list_all(self) -> list[ScoringConfigurationVersion]:
         result = await self._session.execute(
