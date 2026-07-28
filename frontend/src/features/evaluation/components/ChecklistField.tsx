@@ -1,5 +1,5 @@
 import { Select } from "../../../components/Select";
-import type { ScoringCriterion } from "../types";
+import type { ScoringCriterion } from "../../../shared/scoringReferenceData";
 
 /**
  * One checklist question, rendered from real Configuration data

@@ -1,29 +1,17 @@
 import { apiRequest } from "../../api/client";
-import type {
-  ScoringConfigurationVersion,
-  ScoringCriterion,
-  ScoringProfile,
-  ScoringWeight,
-  UpdateDraftWeightPayload,
-} from "./types";
+import type { ScoringConfigurationVersion, ScoringWeight, UpdateDraftWeightPayload } from "./types";
 
 /**
  * Configuration API wrappers — TRADEOS_API_SPECIFICATION.md §6.6, the
  * subset approved for Sprint 2.3's Scoring Versions page (view versions,
- * view criteria/profiles as reference, create draft, edit weights,
- * publish). Scoring criteria/profile CRUD (POST/PATCH `/scoring-criteria`,
- * POST `/scoring-profiles`) is explicitly out of scope this sprint — only
- * their read endpoints are wired, since the weights editor needs to
- * display which criterion/profile each weight belongs to.
+ * edit weights, publish). `listScoringCriteria`/`listScoringProfiles`
+ * moved to `src/shared/scoringReferenceData.ts` (Architecture Readiness
+ * Review, before Sprint 4.4) — see that module's own docstring.
+ * Scoring criteria/profile CRUD (POST/PATCH `/scoring-criteria`,
+ * POST `/scoring-profiles`) remains explicitly out of scope this
+ * sprint — only reads were ever wired, since the weights editor only
+ * needs to display which criterion/profile each weight belongs to.
  */
-
-export function listScoringProfiles(): Promise<ScoringProfile[]> {
-  return apiRequest<ScoringProfile[]>("/configuration/scoring-profiles");
-}
-
-export function listScoringCriteria(): Promise<ScoringCriterion[]> {
-  return apiRequest<ScoringCriterion[]>("/configuration/scoring-criteria");
-}
 
 export function listConfigurationVersions(): Promise<ScoringConfigurationVersion[]> {
   return apiRequest<ScoringConfigurationVersion[]>("/configuration/versions");

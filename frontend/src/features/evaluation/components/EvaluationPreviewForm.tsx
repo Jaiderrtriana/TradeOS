@@ -3,10 +3,18 @@ import { useEffect, useRef, useState } from "react";
 
 import { ScoreRing } from "../../../components/ScoreRing";
 import { Select } from "../../../components/Select";
-import { listScoringCriteria, listScoringProfiles, previewEvaluation } from "../api";
+import {
+  listScoringCriteria,
+  listScoringProfiles,
+  scoringReferenceKeys,
+  type ScoringCriterion,
+} from "../../../shared/scoringReferenceData";
+import { previewEvaluation } from "../api";
 import { debounce } from "../debounce";
-import type { ChecklistAnswers, ScoringCriterion } from "../types";
+import { evaluationKeys } from "../queryKeys";
+import type { ChecklistAnswers } from "../types";
 import { ChecklistField } from "./ChecklistField";
+import { STABLE_DATA_STALE_TIME_MS } from "../../../queryClient";
 
 const DEBOUNCE_MS = 500;
 
@@ -43,15 +51,15 @@ const ENGINE_ORDER = ["confidence", "quality", "execution", "market_context", "b
  */
 export function EvaluationPreviewForm() {
   const { data: criteria } = useQuery({
-    queryKey: ["evaluation", "scoring-criteria"],
+    queryKey: scoringReferenceKeys.criteria(),
     queryFn: listScoringCriteria,
-    staleTime: 60_000,
+    staleTime: STABLE_DATA_STALE_TIME_MS,
   });
 
   const { data: profiles } = useQuery({
-    queryKey: ["evaluation", "scoring-profiles"],
+    queryKey: scoringReferenceKeys.profiles(),
     queryFn: listScoringProfiles,
-    staleTime: 60_000,
+    staleTime: STABLE_DATA_STALE_TIME_MS,
   });
 
   const [profile, setProfile] = useState("");
@@ -94,7 +102,7 @@ export function EvaluationPreviewForm() {
     error,
     isFetching,
   } = useQuery({
-    queryKey: ["evaluation", "preview", debouncedProfile, debouncedAnswers],
+    queryKey: evaluationKeys.preview(debouncedProfile, debouncedAnswers),
     queryFn: () =>
       previewEvaluation({ checklist_answers: debouncedAnswers, scoring_profile: debouncedProfile }),
     enabled: debouncedProfile !== "",

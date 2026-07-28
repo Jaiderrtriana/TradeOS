@@ -2545,3 +2545,165 @@ by_trade_id()` already established in Sprint 4.1.
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Frontend infrastructure prep — ahead of Sprint 4.4
+
+Closed ahead of Sprint 4.4 (Trading Frontend), by explicit approval, as the
+direct output of an Architecture Readiness Review performed before writing
+any Trading Frontend code. The review's brief: identify decisions that are
+"today still easy to fix but could become significant technical debt during
+frontend development" — read-only, no implementation — across ten areas
+(frontend architecture readiness, component-organization risk, React Query
+audit, forms architecture, contract-drift risk, scalability, testing
+strategy, performance, architectural consistency, prioritized risk list).
+This entry covers the subset of that review's recommendations approved for
+implementation now, before Sprint 4.4's actual pages: both items the review
+flagged as blocking (critical), the two architecture decisions the review
+asked to be ratified before Trade Entry exists, and three additional
+infrastructure preparations approved the same sprint because they do not
+require later redesign if implemented now. No Trading Frontend page (Trades
+List, Trade Detail, Trade Entry, Rule Explorer) is part of this entry.
+
+### Critical #1 — TanStack Table + TanStack Virtual, before the Trades List exists
+
+The review's own scale test ("80+ pages, 150+ components") applied to a
+Trades List backed by every Trade a user has ever logged made an unstyled
+plain `<table>` a near-certain future rewrite. `TRADEOS_TECHNICAL_STACK.md`
+§6.9 already mandates TanStack Table + TanStack Virtual for exactly this
+case — installed now (`@tanstack/react-table@8.21.3`,
+`@tanstack/react-virtual@3.14.8`) and built into a new, generic
+`VirtualizedDataTable<T>` component (`frontend/src/components/
+VirtualizedDataTable.tsx`). This is deliberately a **second** table
+component, not a replacement for the existing `DataTable`: Configuration's
+and Catalogs' tables stay on the simple one — Blueprint §16 itself says
+virtualization is unneeded there, and migrating them would be premature
+optimization outside this sprint's approved scope. Only the future Trades
+List will use `VirtualizedDataTable`.
+
+### Critical #2 — three-tier testing strategy, before Trade Entry exists
+
+The review's testing-strategy audit found no component-level tier at all —
+Vitest covered pure logic, Playwright covered nothing yet, and nothing
+exercised a component's actual render/interaction behavior. Trade Entry
+(Sprint 4.4) is exactly the kind of form-heavy, stateful component where
+that gap would have been most expensive to close retroactively.
+`@testing-library/react@16.3.2`, `@testing-library/jest-dom@7.0.0`, and
+`@testing-library/user-event@14.6.1` are now installed, with `jsdom@30.0.0`
+as the Vitest environment (`vite.config.ts`: `test.environment` changed
+from `"node"` to `"jsdom"`, `test.setupFiles` now loads
+`src/test-support/setupTests.ts`). The three tiers, and the explicit
+boundary between them: **Unit** (Vitest, pure logic, `.test.ts`) → **Component**
+(Vitest + `@testing-library/react`, jsdom, `.test.tsx`) → **E2E**
+(Playwright, real browser). That boundary was tested empirically, not
+assumed: `VirtualizedDataTable.test.tsx` tried asserting virtualized-row
+rendering and click behavior at the Component tier first, and it failed —
+jsdom has no real layout engine, so `@tanstack/react-virtual` computes zero
+visible rows (`clientHeight`/`getBoundingClientRect` all report 0 in
+jsdom). Faking a layout by stubbing those globally was tried and reverted:
+it would only prove the stub works, not real behavior. The component test
+now asserts only what jsdom can honestly verify (header rendering, empty
+state); virtualized-row interaction is documented there as an E2E concern,
+to be exercised once a real Trades List exists.
+
+### Architecture decision #1 — Trade Entry module structure, ratified
+
+The review proposed, and this entry ratifies as the official structure for
+Sprint 4.4: `TradeEntryModal`, `SimpleForm`, `ProForm`, `ChecklistSection`,
+`TradeEntryScorePreview`, `useTradeEntryForm`. No code for these exists
+yet — this is a structural decision recorded now so Sprint 4.4 does not
+redecide it mid-implementation.
+
+### Architecture decision #2 — OpenAPI codegen deferral, recorded as technical debt
+
+The review raised backend↔frontend contract drift risk (OpenAPI/DTO/TS/Zod
+can silently diverge since every TS type is hand-mirrored from the Pydantic
+schema). The decision, by explicit instruction: **do not** introduce
+automatic OpenAPI type generation yet — manual TypeScript type mirroring
+continues for now. This is recorded here specifically because the
+instruction was to document it as technical debt for future review, not to
+treat it as a closed question: as the API surface grows past Sprint 4.4
+(more Trading endpoints, then Analytics, Reporting, Administration), the
+manual-mirroring cost rises linearly with endpoint count while an
+OpenAPI-codegen pipeline's setup cost is fixed — the trade-off should be
+revisited once that crossover looks close, not deferred indefinitely by
+default.
+
+### Additional infrastructure prep approved this sprint
+
+- **React Query key factories + a single `QueryClient`.** Every feature's
+  query keys are now built by typed factory functions
+  (`frontend/src/features/{evaluation,configuration}/queryKeys.ts`) instead
+  of inline array literals — the review's own finding was that inline keys
+  are how cache-key drift and stale `invalidateQueries` calls happen
+  silently as the number of queries grows. `frontend/src/queryClient.ts`
+  replaces the ad hoc `new QueryClient()` in `App.tsx` with one configured
+  instance: `STABLE_DATA_STALE_TIME_MS = 60_000` for reference data that
+  rarely changes (scoring criteria, profiles, configuration versions) and
+  `LIVE_DATA_STALE_TIME_MS = 0` as the default for everything else, plus
+  `retry: 1` (not TanStack Query's default of 3 — this codebase's own
+  error envelope already distinguishes retryable from non-retryable
+  failures; three silent retries before that surfaces was judged too
+  slow to fail).
+- **Scoring criteria/profile query deduplication.** `listScoringCriteria`/
+  `listScoringProfiles` were implemented twice — once in
+  `features/evaluation/api.ts`, once in `features/configuration/api.ts` —
+  fetching the same Configuration data through two independently-typed,
+  independently-cached paths. Both call sites now import from one new
+  module, `frontend/src/shared/scoringReferenceData.ts`, which owns the
+  canonical `ScoringProfile`/`ScoringCriterion` shapes and their query-key
+  factory. This is a deliberate, narrow exception to "own DTOs per
+  feature" — `src/shared/` is reserved for data genuinely needed
+  identically by multiple features (mirroring the backend's own
+  `shared_kernel` exception to per-module ownership), not a general escape
+  hatch. `evaluation` and `configuration` were updated to import from it;
+  `trading` will be its third consumer once Sprint 4.4 needs the same
+  reference data.
+- **`eslint-plugin-boundaries` enforcement of `TRADEOS_FRONTEND_BLUEPRINT.md`
+  §2.4** ("cross-feature reuse goes through the shared component library,
+  never through one feature importing another feature's internals
+  directly"). Until now this was a comment-only convention — nothing
+  failed a build if a future feature violated it, and the review's own
+  scale test is exactly where that stops being reliable. `boundaries/
+  elements` now classifies `src/features/*` (captured per-feature),
+  `src/shared`, `src/components`, `src/api`, `src/auth`, `src/layout`;
+  `boundaries/dependencies` denies by default and allows only same-feature,
+  own-feature-to-shared-layer, and each shared layer's own legitimate
+  dependencies (including `api → auth`, which the API client needs for
+  reading the stored access token to attach `Authorization` — a real,
+  already-shipped Sprint 1.2 dependency the policy set had to account for).
+  **A real false negative was found and fixed while configuring this**:
+  `eslint-plugin-boundaries` resolves import specifiers via
+  `eslint-module-utils/resolve`, which had no `import/resolver` configured
+  — every extension-less relative TS import (`"../auth/tokenStorage"`,
+  effectively all of them) silently failed to resolve, so every
+  dependency's target was classified `unknown` and the rule skipped it
+  without ever reporting a violation. The rule looked configured and
+  produced zero warnings, but provided zero actual protection. Diagnosed
+  by enabling the plugin's own `ESLINT_PLUGIN_BOUNDARIES_DEBUG=1` output
+  and inspecting a dependency's resolved `to` element directly. Fixed by
+  installing `eslint-import-resolver-typescript@4.4.5` and pointing
+  `settings["import/resolver"].typescript` at `tsconfig.app.json`. Verified
+  with a repeatable smoke test (a temporary file importing across feature
+  boundaries; confirmed `pnpm`/`eslint` now reports a real error; confirmed
+  a clean baseline with the file removed) rather than trusting a clean
+  exit code alone, since a clean exit code was exactly what the broken
+  configuration also produced.
+- `date-fns@4.4.0` and `lucide-react@1.27.0` installed ahead of need — the
+  Trades List (date formatting) and the virtualized table (sort/expand
+  icons) are their first consumers, in Sprint 4.4; neither is imported by
+  any file yet.
+
+### Verification performed
+- `tsc --noEmit -p tsconfig.app.json` — clean.
+- `eslint .` — clean, zero warnings (a first: every earlier boundaries
+  configuration attempt produced deprecation or shape warnings even when
+  it ran).
+- `vitest run` — **36 passed** (7 test files), including the 2 new
+  `VirtualizedDataTable` component tests.
+- `vite build` — succeeds; 281 modules transformed.
+- Smoke-tested `eslint-plugin-boundaries` twice: baseline clean, then a
+  deliberately cross-feature-importing temporary file correctly reported
+  as `boundaries/dependencies` error, then clean again after removing it.
+
+### Confirmation
+No `git push` was run at any point.

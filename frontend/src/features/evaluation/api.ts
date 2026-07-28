@@ -1,26 +1,16 @@
 import { apiRequest } from "../../api/client";
-import type {
-  EvaluationSnapshot,
-  PreviewEvaluationPayload,
-  ScoringCriterion,
-  ScoringProfile,
-} from "./types";
+import type { EvaluationSnapshot, PreviewEvaluationPayload } from "./types";
 
 /**
- * Evaluation API wrappers — TRADEOS_API_SPECIFICATION.md §6.5 (preview)
- * and the read-only subset of §6.6 this feature needs to build a
- * checklist form (criteria, profiles). Own copies of the Configuration
- * reads, not imports from `features/configuration/api.ts`
- * (TRADEOS_FRONTEND_BLUEPRINT.md §2.4 — no cross-feature internals).
+ * Evaluation API wrappers — TRADEOS_API_SPECIFICATION.md §6.5 (preview).
+ * `listScoringCriteria`/`listScoringProfiles` moved to
+ * `src/shared/scoringReferenceData.ts` (Architecture Readiness Review,
+ * before Sprint 4.4) — Configuration's own read endpoints, fetched
+ * identically by this feature and by `features/configuration/`; kept as
+ * one shared read instead of two independently-cached copies of the
+ * same data. See that module's own docstring for why this is a
+ * deliberate exception, not a reversal, of "own DTOs per feature."
  */
-
-export function listScoringCriteria(): Promise<ScoringCriterion[]> {
-  return apiRequest<ScoringCriterion[]>("/configuration/scoring-criteria");
-}
-
-export function listScoringProfiles(): Promise<ScoringProfile[]> {
-  return apiRequest<ScoringProfile[]>("/configuration/scoring-profiles");
-}
 
 export function previewEvaluation(payload: PreviewEvaluationPayload): Promise<EvaluationSnapshot> {
   return apiRequest<EvaluationSnapshot>("/evaluation/preview", {

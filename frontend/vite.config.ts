@@ -8,10 +8,16 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react()],
   test: {
-    // Pure-logic tests only (TRADEOS_TECHNICAL_STACK.md §10 names Vitest,
-    // not a DOM/component-rendering library) — no jsdom environment needed
-    // for Sprint 0.3's parseApiError tests.
-    environment: "node",
+    // jsdom (not "node"): Architecture Readiness Review before Sprint 4.4
+    // approved a three-tier testing strategy (Unit -> Component -> E2E) —
+    // component tests (`@testing-library/react`) need a DOM. jsdom is a
+    // strict superset for the pure-logic tests already written under
+    // "node" (Sprint 0.3-3.3) — none of them touch `window`/`document`,
+    // so switching the one shared environment doesn't change their
+    // behavior, and keeps a single Vitest config rather than per-file
+    // environment overrides.
+    environment: "jsdom",
+    setupFiles: ["./src/test-support/setupTests.ts"],
     exclude: ["e2e/**", "node_modules/**"],
   },
 });

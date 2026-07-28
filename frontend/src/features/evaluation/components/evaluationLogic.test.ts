@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { ScoringCriterion } from "../types";
+import type { ScoringCriterion } from "../../../shared/scoringReferenceData";
 import { groupActiveCriteriaByEngine, upsertChecklistAnswer } from "./EvaluationPreviewForm";
 
 function criterion(overrides: Partial<ScoringCriterion>): ScoringCriterion {
@@ -9,6 +9,7 @@ function criterion(overrides: Partial<ScoringCriterion>): ScoringCriterion {
     engine_type_code: "confidence",
     category: null,
     name: "X",
+    description: "",
     source_field: "y",
     min_value: 0,
     max_value: 100,

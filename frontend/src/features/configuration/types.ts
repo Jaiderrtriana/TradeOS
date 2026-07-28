@@ -4,31 +4,17 @@
  * directly against backend/app/modules/configuration/presentation/
  * schemas.py and catalog_schemas.py, Sprints 2.1-2.2). No field renamed,
  * added, or removed relative to the actual wire shape.
+ *
+ * `ScoringProfile`/`ScoringCriterion` are **not** redefined here —
+ * imported from `src/shared/scoringReferenceData.ts` instead
+ * (Architecture Readiness Review, before Sprint 4.4): see that module's
+ * own docstring.
  */
 
 export interface EngineType {
   code: string;
   display_name: string;
   is_signed: boolean;
-  is_active: boolean;
-}
-
-export interface ScoringProfile {
-  code: string;
-  display_name: string;
-  is_active: boolean;
-}
-
-export interface ScoringCriterion {
-  id: string;
-  engine_type_code: string;
-  category: string | null;
-  name: string;
-  description: string;
-  source_field: string;
-  min_value: number;
-  max_value: number;
-  category_map: Record<string, unknown> | null;
   is_active: boolean;
 }
 

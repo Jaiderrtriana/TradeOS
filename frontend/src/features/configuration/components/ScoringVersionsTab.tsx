@@ -9,15 +9,22 @@ import { DataTable } from "../../../components/DataTable";
 import { Select } from "../../../components/Select";
 import { useErrorReporter } from "../../../components/ErrorContext";
 import { ApiError } from "../../../api/errors";
+import { STABLE_DATA_STALE_TIME_MS } from "../../../queryClient";
+import {
+  listScoringCriteria,
+  listScoringProfiles,
+  scoringReferenceKeys,
+  type ScoringCriterion,
+  type ScoringProfile,
+} from "../../../shared/scoringReferenceData";
 import {
   createDraftConfigurationVersion,
   listConfigurationVersions,
   listConfigurationWeights,
-  listScoringCriteria,
-  listScoringProfiles,
   publishConfigurationVersion,
   updateDraftWeight,
 } from "../api";
+import { configurationKeys } from "../queryKeys";
 import {
   createDraftVersionSchema,
   weightFormSchema,
@@ -28,8 +35,6 @@ import {
 import type {
   ScoringConfigurationVersion,
   ScoringConfigurationVersionStatus,
-  ScoringCriterion,
-  ScoringProfile,
   ScoringWeight,
 } from "../types";
 
@@ -56,28 +61,28 @@ export function ScoringVersionsTab() {
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
 
   const { data: versions, isLoading: versionsLoading } = useQuery({
-    queryKey: ["configuration", "versions"],
+    queryKey: configurationKeys.versions(),
     queryFn: listConfigurationVersions,
-    staleTime: 60_000,
+    staleTime: STABLE_DATA_STALE_TIME_MS,
   });
 
   const { data: criteria } = useQuery({
-    queryKey: ["configuration", "criteria"],
+    queryKey: scoringReferenceKeys.criteria(),
     queryFn: listScoringCriteria,
-    staleTime: 60_000,
+    staleTime: STABLE_DATA_STALE_TIME_MS,
   });
 
   const { data: profiles } = useQuery({
-    queryKey: ["configuration", "profiles"],
+    queryKey: scoringReferenceKeys.profiles(),
     queryFn: listScoringProfiles,
-    staleTime: 60_000,
+    staleTime: STABLE_DATA_STALE_TIME_MS,
   });
 
   const { data: weights } = useQuery({
-    queryKey: ["configuration", "versions", selectedVersionId, "weights"],
+    queryKey: configurationKeys.weights(selectedVersionId ?? ""),
     queryFn: () => listConfigurationWeights(selectedVersionId as string),
     enabled: selectedVersionId !== null,
-    staleTime: 60_000,
+    staleTime: STABLE_DATA_STALE_TIME_MS,
   });
 
   const {
@@ -91,7 +96,7 @@ export function ScoringVersionsTab() {
     mutationFn: (values: CreateDraftVersionFormValues) =>
       createDraftConfigurationVersion(values.version_label),
     onSuccess: (version) => {
-      queryClient.invalidateQueries({ queryKey: ["configuration", "versions"] });
+      queryClient.invalidateQueries({ queryKey: configurationKeys.versions() });
       setSelectedVersionId(version.id);
       resetDraftForm();
     },
@@ -101,7 +106,7 @@ export function ScoringVersionsTab() {
   const publish = useMutation({
     mutationFn: (versionId: string) => publishConfigurationVersion(versionId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["configuration", "versions"] });
+      queryClient.invalidateQueries({ queryKey: configurationKeys.versions() });
     },
     onError: (error: ApiError) => reportError(error),
   });
@@ -229,7 +234,7 @@ function VersionDetail({
     mutationFn: (values: WeightFormValues) => updateDraftWeight(version.id, values),
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: ["configuration", "versions", version.id, "weights"],
+        queryKey: configurationKeys.weights(version.id),
       });
       resetWeightForm();
     },
