@@ -77,6 +77,29 @@ def validate_close_requires_result_and_exit_price(
             )
 
 
+def compute_r_multiple(
+    direction: str, entry_price: float, stop_loss: float, exit_price: float | None
+) -> float | None:
+    """Real Excel formula (column X, "R:R real"):
+    `=IFERROR(IF(F2="Long",(R2-N2)/(N2-O2),(N2-R2)/(O2-N2)),"")`
+
+    Extracted as a standalone function (Sprint 5.2) so
+    `MistakePriorityRankingService` can compute a mistake's aggregate
+    cost directly from raw joined query fields (`TradeMistakeRepository.
+    list_trade_facts_for_ranking`) without constructing a full `Trade`
+    domain object per row — the same formula, reused rather than
+    duplicated. `Trade.r_multiple` below is now a thin wrapper over this.
+    """
+    if exit_price is None:
+        return None
+    try:
+        if direction == LONG:
+            return (exit_price - entry_price) / (entry_price - stop_loss)
+        return (entry_price - exit_price) / (stop_loss - entry_price)
+    except ZeroDivisionError:
+        return None
+
+
 @dataclass
 class Trade:
     user_id: uuid.UUID
@@ -112,14 +135,7 @@ class Trade:
     def r_multiple(self) -> float | None:
         """Real Excel formula (column X, "R:R real"):
         `=IFERROR(IF(F2="Long",(R2-N2)/(N2-O2),(N2-R2)/(O2-N2)),"")`"""
-        if self.exit_price is None:
-            return None
-        try:
-            if self.direction == LONG:
-                return (self.exit_price - self.entry_price) / (self.entry_price - self.stop_loss)
-            return (self.entry_price - self.exit_price) / (self.stop_loss - self.entry_price)
-        except ZeroDivisionError:
-            return None
+        return compute_r_multiple(self.direction, self.entry_price, self.stop_loss, self.exit_price)
 
     @property
     def mfe_r(self) -> float | None:

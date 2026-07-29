@@ -8,7 +8,7 @@ import { DashboardPage } from "./features/dashboard/pages/DashboardPage";
 import { EvaluationPage } from "./features/evaluation/pages/EvaluationPage";
 import { JournalEntryDetailPage } from "./features/journal/pages/JournalEntryDetailPage";
 import { JournalListPage } from "./features/journal/pages/JournalListPage";
-import { MistakesPage } from "./features/mistakes/pages/MistakesPage";
+import { MistakesRankingPage } from "./features/mistakes/pages/MistakesRankingPage";
 import { PlaybookPage } from "./features/playbook/pages/PlaybookPage";
 import { PreferencesPage } from "./features/settings/pages/PreferencesPage";
 import { StatisticsPage } from "./features/statistics/pages/StatisticsPage";
@@ -45,7 +45,7 @@ export function AppRouter() {
         <Route path="/journal" element={<JournalListPage />} />
         <Route path="/journal/:entryId" element={<JournalEntryDetailPage />} />
         <Route path="/statistics" element={<StatisticsPage />} />
-        <Route path="/mistakes" element={<MistakesPage />} />
+        <Route path="/mistakes" element={<MistakesRankingPage />} />
         <Route path="/evaluation" element={<EvaluationPage />} />
         <Route path="/configuration" element={<ConfigurationPage />} />
         <Route path="/settings" element={<PreferencesPage />} />

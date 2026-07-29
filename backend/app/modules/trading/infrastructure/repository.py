@@ -509,6 +509,51 @@ class TradeMistakeRepository:
             for row in result.scalars()
         ]
 
+    async def list_trade_facts_for_ranking(self, user_id: uuid.UUID) -> list["MistakeTradeFact"]:
+        """`MistakePriorityRankingService` (Sprint 5.2): every `trade_
+        mistakes` row for this user's Trades, joined with the raw Trade
+        fields `compute_r_multiple` needs -- one query, never one per
+        Trade (the N+1 `TradeRepository.list_all` + per-trade `list_by_
+        trade_id` would produce). Scoped to `user_id` via the join, not a
+        separate ownership check -- a soft-deleted Trade is excluded the
+        same way every other read in this module already excludes one."""
+        result = await self._session.execute(
+            select(
+                TradeMistakeModel.catalog_entry_id,
+                TradeModel.direction,
+                TradeModel.entry_price,
+                TradeModel.stop_loss,
+                TradeModel.exit_price,
+            )
+            .join(TradeModel, TradeMistakeModel.trade_id == TradeModel.id)
+            .where(TradeModel.user_id == user_id, TradeModel.deleted_at.is_(None))
+        )
+        return [
+            MistakeTradeFact(
+                catalog_entry_id=row.catalog_entry_id,
+                direction=row.direction,
+                entry_price=_as_float(row.entry_price),
+                stop_loss=_as_float(row.stop_loss),
+                exit_price=_as_optional_float(row.exit_price),
+            )
+            for row in result.all()
+        ]
+
+
+@dataclass(frozen=True)
+class MistakeTradeFact:
+    """One `trade_mistakes` occurrence's raw Trade fields -- exactly what
+    `compute_r_multiple` needs, nothing else. Kept in `infrastructure/`
+    (not `domain/`) since it's a query-result shape, not a domain
+    concept; `trading/application/list_mistake_occurrences.py` converts
+    it into the cost figure Mistakes' own domain layer actually uses."""
+
+    catalog_entry_id: uuid.UUID
+    direction: str
+    entry_price: float
+    stop_loss: float
+    exit_price: float | None
+
 
 def _as_float(value: Any) -> float:
     return float(value)

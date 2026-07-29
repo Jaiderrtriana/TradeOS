@@ -21,6 +21,7 @@ from app.modules.configuration.presentation.router import router as configuratio
 from app.modules.evaluation.presentation.router import router as evaluation_router
 from app.modules.identity.presentation.router import router as identity_router
 from app.modules.journal.presentation.router import router as journal_router
+from app.modules.mistakes.presentation.router import router as mistakes_router
 from app.modules.preferences.presentation.router import router as preferences_router
 from app.modules.trading.presentation.router import router as trading_router
 from app.platform.config import settings
@@ -69,6 +70,7 @@ app.include_router(catalogs_router, prefix="/api/v1")
 app.include_router(evaluation_router, prefix="/api/v1")
 app.include_router(trading_router, prefix="/api/v1")
 app.include_router(journal_router, prefix="/api/v1")
+app.include_router(mistakes_router, prefix="/api/v1")
 
 # Middleware order matters: Starlette runs the LAST-added middleware
 # OUTERMOST (first on the way in). Order, outermost to innermost:

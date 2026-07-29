@@ -3087,3 +3087,146 @@ name). Fixed by renaming the modal's fields to `entry_period_start`/
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Sprint 5.2 — Mistakes Ranking Backend + Frontend
+
+`MistakePriorityRankingService`; the Mistakes Ranking page —
+`TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` Sprint 5.2, closing Milestone M5
+("Journal entries... and the Mistake priority ranking both function
+against real Trade data"). Pre-analysis re-read `TRADEOS_DOMAIN_MODEL.md`
+§4.6/§8.7/§8.9/§11/§12.3/§14, `TRADEOS_BACKEND_BLUEPRINT.md` §3.8/§4.6/
+§4.8/§5/§6/§19-21, `TRADEOS_API_SPECIFICATION.md` §5/§6.4/§6.9/§7.4,
+`TRADEOS_FRONTEND_BLUEPRINT.md` §3/§4.1/§4.7/§5.3/§5.7/§6.7/§7/§8/§11/§12,
+`TRADEOS_PRODUCT_BIBLE.md` §9/§15, `TRADEOS_DATABASE_DESIGN.md` §3/§5/
+§6.8/§6.9/§6.14, and ADR-04 — plus the actual repo state (`backend/app/
+modules/mistakes/` was empty scaffolding; `frontend/src/features/
+mistakes/` held only a placeholder page; both routes/nav already wired).
+
+### A real, unregistered documentary gap — stopped and asked before writing code
+
+Every document that mentions `MistakePriorityRankingService` (Domain
+Model §12.3, §8.9; Product Bible §9; Backend Blueprint §3.8/§5; API Spec
+§6.9; Frontend Blueprint §11/§12) repeats the same three nouns —
+*frequency, cost, priority* — without ever defining any of them
+mathematically. Unlike the `scoring_profile`/`closed_at` precedents from
+Sprint 4.1, this gap was never even registered as a tracked open
+question anywhere (checked Product Bible §15, API Spec §18's API-1
+through API-6, Backend Blueprint §21's BE-1 through BE-10 in full — none
+of them). `trade_mistakes` stores no cost data of its own (§6.14: only
+`trade_id, catalog_entry_id, created_at`), so "cost" had to be derived
+from the tagged Trade — and even that had two undecided candidates
+(`realized_pnl` vs. the never-stored, computed `r_multiple`). Stopped
+and asked before writing any ranking code; your approved resolution:
+
+- **Cost** = sum of `r_multiple` (risk-normalized, consistent with the
+  app's existing scoring/evaluation language), never `realized_pnl`.
+- **Scope** = every Trade tagged with a mistake, winners included — not
+  losses-only.
+- **Aggregation** = total (sum), matching the documents' own literal
+  "total cost" wording, not an average per occurrence.
+- **Priority** = explicitly **not** a combined formula. Your correction
+  to my first proposal (`priority = frequency × |cost|`): Priority must
+  be a **stable** rank by the system's primary metric (Cost, the default
+  sort), fixed regardless of which column the user temporarily sorts the
+  *visible* table by — otherwise "Priority" degrades into a duplicate of
+  the current row index, carrying no information of its own. Implemented
+  exactly that: `rank_mistakes()` assigns each tag a `priority` (its
+  1-indexed rank by `total_cost_r` ascending) once; `sort` only reorders
+  the returned list for display, never touches an entry's own `priority`
+  value. Verified by a dedicated backend test and an E2E test, both
+  asserting the same tag's `priority` is byte-identical across two
+  different active sorts.
+
+Two secondary ambiguities resolved without needing a question: pagination
+(API Spec never says whether `/mistakes/ranking` is a paginated "list
+endpoint" like Trades/Journal or a single computed object like
+Statistics; resolved by precedent — architecturally identical to
+Statistics' on-demand, never-cached computation per ADR-04/KDD-04, not to
+a growing row-scale collection — a bare unpaginated array, same
+precedent as `/configuration/scoring-criteria`); and deactivated tags
+(the Master Plan's own regression-test note, "excludes deactivated tags'
+*new* use while still counting their historical occurrences," is a
+direct consequence of DI-09/DI-10 already enforced by `TagMistakeUseCase`
+— this sprint's only obligation was to never filter a deactivated tag
+out of the ranking, confirmed by a dedicated test).
+
+Two broken internal citations noted, not corrected: the Master Plan cites
+Frontend Blueprint §6.10–6.11 for this page, but those sections are
+"Reflect (Journal)" and "Manage Catalogs" — unrelated; and Backend
+Blueprint §20 cites its own nonexistent "§5.3" (Section 5 has no
+subsections).
+
+### Architecture: one-way dependency, zero new persistence
+
+`Mistakes` reads `Trading` and `Configuration` exclusively through each
+module's own Application-layer factory (`ListMistakeOccurrencesUseCase`
++ `build_list_mistake_occurrences_use_case`, new; `ListCatalogEntriesUseCase`
+gained `build_list_catalog_entries_use_case`, which didn't exist yet) —
+never a repository directly, same discipline (re-)established in Sprint
+5.1. Neither `Trading` nor `Configuration` imports anything from
+`Mistakes` — confirmed by `grep`, zero results. `compute_r_multiple` was
+extracted from `Trade.r_multiple` into a standalone function (behavior
+unchanged, confirmed by the full `tests/trading/` suite) so the ranking
+can compute cost directly from a batched query's raw fields without
+constructing a full `Trade` per row. `TradeMistakeRepository.
+list_trade_facts_for_ranking` does the aggregation-enabling work in one
+JOIN query (`trade_mistakes` + `trades`, scoped to `user_id`), avoiding
+the N+1 an approach iterating `TradeRepository.list_all` +
+per-trade `list_by_trade_id` would produce. No new table, no migration —
+`Mistakes` owns no persistence, per Backend Blueprint §3.8 exactly.
+
+### A real sort-direction bug, caught by its own test before shipping
+
+The first implementation of `sort=-cost` used `total_cost_r is not None`
+as its null-ordering flag — inverted from `sort=cost`'s `is None` — which
+put still-open trades' tags (no computable cost) *first* instead of last
+when sorting descending. Caught immediately by
+`test_priority_is_stable_across_different_sort_orders`, the same test
+built to verify the core architectural requirement above. Fixed by using
+the identical "`None` always sorts last, in both directions" flag for
+both `cost` and `-cost`.
+
+### Added
+- Backend: `backend/app/modules/mistakes/{domain/mistake_ranking.py,
+  application/get_mistake_ranking.py,presentation/{schemas,router}.py}`;
+  `app/modules/trading/application/list_mistake_occurrences.py`;
+  `TradeMistakeRepository.list_trade_facts_for_ranking` +
+  `MistakeTradeFact` (`trading/infrastructure/repository.py`);
+  `compute_r_multiple` extracted in `trading/domain/trade.py`;
+  `build_list_catalog_entries_use_case`
+  (`configuration/application/list_catalog_entries.py`); router
+  registered in `app/main.py`; `tests/mistakes/test_mistake_ranking_flow.py`
+  (8 tests).
+- Frontend: `src/features/mistakes/{types,api,queryKeys}.ts`;
+  `pages/MistakesRankingPage.tsx` (replacing the old `MistakesPage.tsx`
+  placeholder) — table only, per approved scope; the "Mistakes Frequency/
+  Cost" chart (Frontend Blueprint §12) stays deferred with the rest of
+  this project's charting infrastructure (Recharts). `src/router.tsx`
+  updated, same `/mistakes` path.
+- `e2e/mistakes.spec.ts` (2 tests) — including a dedicated assertion that
+  Priority is unchanged in the real UI after switching the visible sort
+  from Cost to Frequency.
+
+### Verification performed
+- Backend: `pytest` — **283 passed** (8 new; 275 carried over, one
+  `test_tampered_signature_is_rejected` flake observed during a
+  full-suite run, confirmed unrelated to this sprint and non-reproducing
+  via two clean full-suite re-runs); `ruff format --check` / `ruff check`
+  / `mypy app` — clean (172 source files).
+- Frontend: `tsc --noEmit` — clean; `eslint .` — clean, zero warnings,
+  zero `boundaries/dependencies` violations; `vitest run` — **66 passed**
+  (12 test files, no regressions); `vite build` — succeeds (319 modules).
+- E2E: `playwright test` — **19 tests, 18 passed, 1 pre-existing
+  documented flake** (the same `evaluation-preview.spec.ts` Configuration-
+  publish race, reconfirmed unrelated) — including both new
+  `mistakes.spec.ts` tests.
+- Audit: `grep` confirms zero TODO/FIXME, zero `console.log`, zero
+  imports of `mistakes` from `trading`/`configuration` (correct
+  one-way dependency direction); the local dev stack (Postgres container
+  — which had crashed mid-session on an unrelated Docker Desktop
+  restart, diagnosed via a direct `curl` against a DB-touching endpoint
+  before blaming the E2E tests themselves, then restarted — and the
+  `uvicorn` process) was torn down after verification.
+
+### Confirmation
+No `git push` was run at any point.
