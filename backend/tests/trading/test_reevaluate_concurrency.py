@@ -72,7 +72,14 @@ async def concurrency_engine():
     with PostgresContainer("postgres:16", driver="asyncpg") as container:
         engine = create_async_engine(container.get_connection_url())
         async with engine.begin() as conn:
-            for schema in ("platform", "identity", "preferences", "configuration", "trading"):
+            for schema in (
+                "platform",
+                "identity",
+                "preferences",
+                "configuration",
+                "trading",
+                "journal",
+            ):
                 await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
             await conn.run_sync(Base.metadata.create_all)
             # Neither partial unique index is applied by `create_all`

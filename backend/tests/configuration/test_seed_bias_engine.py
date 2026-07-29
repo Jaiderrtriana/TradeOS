@@ -75,10 +75,11 @@ async def bias_seed_session(monkeypatch):
             await conn.execute(text("CREATE SCHEMA IF NOT EXISTS configuration"))
             # Base.metadata is shared and process-wide (conftest.py
             # unconditionally imports every module's models, Sprint 4.1
-            # added `trading`) -- every schema any module declares must
-            # exist here too, even though this suite only touches
-            # `configuration`.
+            # added `trading`, Sprint 5.1 added `journal`) -- every schema
+            # any module declares must exist here too, even though this
+            # suite only touches `configuration`.
             await conn.execute(text("CREATE SCHEMA IF NOT EXISTS trading"))
+            await conn.execute(text("CREATE SCHEMA IF NOT EXISTS journal"))
             await conn.run_sync(Base.metadata.create_all)
 
         session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)

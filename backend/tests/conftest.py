@@ -15,6 +15,7 @@ from testcontainers.community.postgres import PostgresContainer
 
 from app.modules.configuration.infrastructure import models as configuration_models
 from app.modules.identity.infrastructure import models as identity_models  # noqa: F401
+from app.modules.journal.infrastructure import models as journal_models  # noqa: F401
 from app.modules.preferences.infrastructure import models as preferences_models  # noqa: F401
 from app.modules.trading.infrastructure import models as trading_models  # noqa: F401
 from app.platform.db import models as platform_models  # noqa: F401  (registers metadata)
@@ -36,6 +37,7 @@ async def db_session(postgres_container):
         await conn.execute(text("CREATE SCHEMA IF NOT EXISTS preferences"))
         await conn.execute(text("CREATE SCHEMA IF NOT EXISTS configuration"))
         await conn.execute(text("CREATE SCHEMA IF NOT EXISTS trading"))
+        await conn.execute(text("CREATE SCHEMA IF NOT EXISTS journal"))
         await conn.run_sync(Base.metadata.create_all)
         # Migration 0007's partial unique index isn't applied by
         # `create_all` (that only creates tables/columns, not this

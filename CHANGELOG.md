@@ -2923,3 +2923,167 @@ omitting the section the Blueprint's tree calls for.
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Sprint 5.1 — Journal Backend + Frontend
+
+`CreateJournalEntry`/`UpdateJournalEntry`/`DeleteJournalEntry`; Journal
+List/Detail pages; `JournalEntriesCard` on Trade Detail —
+`TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` Sprint 5.1, Milestone M5
+("Journal entries — trade-scoped and period-scoped — function against
+real Trade data"). Pre-analysis re-read `TRADEOS_DOMAIN_MODEL.md` §8.10,
+`TRADEOS_DATABASE_DESIGN.md` §6.17, `TRADEOS_BACKEND_BLUEPRINT.md`
+§3.10/§4.7-4.8/§20, `TRADEOS_API_SPECIFICATION.md` §6.11, and
+`TRADEOS_FRONTEND_BLUEPRINT.md` §5.3/§5.7/§6.10/§8.3/§10-11 — no genuine
+business-decision gap was found; every apparent ambiguity resolved by an
+already-established codebase precedent (below), never invented.
+
+### A single unified `/journal-entries` resource
+
+`TRADEOS_API_SPECIFICATION.md` §6.11 is explicit: one resource,
+`POST/GET /journal-entries`, `GET/PATCH/DELETE /journal-entries/{id}` —
+never nested under `/trades/{id}/journal`. Trade-scoped vs. period-scoped
+is disambiguated purely by which fields are present in the request body,
+matching `journal.journal_entries`' own exactly-one-of-(`trade_id`)-or-
+(`period_start`+`period_end`) check constraint (`TRADEOS_DATABASE_DESIGN.md`
+§6.17) — the only instance of a mutual-exclusivity-between-two-nullable-
+FKs pattern anywhere in the schema; every other cardinality rule in this
+codebase is a single-parent `UNIQUE` constraint. Enforced identically at
+three layers: the Postgres `CHECK` (migration `0010`), `JournalEntry.
+__post_init__` → `validate_exactly_one_reference` (domain layer, raising
+the same `UnprocessableEntityError`/`UNPROCESSABLE_ENTITY` shape
+`TagMistakeUseCase` already established, Sprint 4.3 — no numbered
+`INV-JOURNAL-*` invariant exists, confirmed absent from `TRADEOS_DOMAIN_
+MODEL.md` §14-15), and Pydantic's own shape validation at the boundary.
+
+### Resolved by precedent, not invention
+
+- **Reference type is immutable after creation** — explicitly stated
+  across three documents ("changing what an entry is 'about' is modeled
+  as delete-and-recreate, not an edit"): `UpdateJournalEntryUseCase`
+  accepts `content` only; `trade_id`/`period_start`/`period_end` have no
+  edit path at all, not even one silently ignored.
+- **No length limit on `content`, no markdown/rich-text, no title/tags**
+  — confirmed by exhaustive absence across the Domain Model, Database
+  Design, API Specification, and Technical Stack documents. `content` is
+  a plain `TEXT`, rendered as plain text (React's default escaping — no
+  `dangerouslySetInnerHTML` anywhere in this feature).
+- **No `period_end >= period_start` ordering check** — the backend's own
+  check constraint doesn't enforce one, so neither the domain layer nor
+  the frontend Zod schema invents one either; documented explicitly in
+  both `journal_entry.py` and `journal/schemas.ts` as a deliberate
+  absence, not an oversight.
+- **`DELETE` is idempotent** — `TRADEOS_API_SPECIFICATION.md` §3.4's
+  general HTTP-verb-semantics rule ("Soft-delete... Idempotent: Yes"),
+  same as `DeleteTradeUseCase` already applies: deleting an
+  already-deleted entry is a successful no-op, never a `404`.
+- **`Idempotency-Key` supported on `POST /journal-entries`** — §3.6's
+  general rule ("every POST that creates a resource") applied via the
+  same `app/platform/idempotency.py` helper `POST /trades` already uses;
+  the Journal section of the API spec doesn't restate this locally, but
+  neither does any other module's endpoint section — the general rule
+  governs.
+
+### Architecture: `journal` reads `trading` through an Application-layer factory, never its repository directly
+
+First implementation attempt imported `TradeRepository` straight from
+`trading.infrastructure.repository` into `CreateJournalEntryUseCase` and
+the router — caught during the audit pass as a violation of this
+codebase's own established cross-module discipline
+(`TRADEOS_SYSTEM_ARCHITECTURE.md` §3.3, Forbidden Dependencies): every
+prior cross-module read (`RegisterTradeUseCase` resolving a
+`CatalogEntry` via Configuration's `build_get_catalog_entry_use_case`)
+goes through the *target* module's own Application-layer factory, never
+its repository or domain directly. Fixed by adding
+`backend/app/modules/trading/application/get_trade_by_id.py`
+(`GetTradeByIdUseCase` + `build_get_trade_by_id_use_case`) — a small,
+new, pure-read Use Case mirroring `GetCatalogEntryUseCase`'s own
+docstring almost verbatim — and wiring Journal through that instead.
+`Trading` still depends on nothing from `Journal` (per Backend Blueprint
+§3.10 and System Architecture §4, the dependency runs one way only).
+
+### Frontend: pages are this architecture's own composition points (`eslint.config.js` refinement)
+
+`TradeDetailPage`'s own wireframe (`TRADEOS_FRONTEND_BLUEPRINT.md` §8.3)
+assembles `TradeSummaryCard`/`EvaluationSummaryCard`/`MistakesCard`
+(Trading's own) alongside `JournalEntriesCard` — which, unlike
+`MistakesCard`, is backed by a genuinely separate feature module
+(`journal`, its own `api.ts`/`types.ts`/`queryKeys.ts`), not Trading's
+own endpoints. The `eslint-plugin-boundaries` rule built in the prior
+sprint correctly flagged this as a `trading → journal` violation —
+confirmed as a real architectural question, not a business one, so
+resolved by extending (not weakening) the existing composition-root
+precedent: a new `page` element (`src/features/*/pages`, matched *before*
+the broader `feature` pattern) is permitted to import from any feature or
+shared layer, mirroring the composition root's own stated rationale
+("legitimately need to import from every feature to wire the app
+together") applied one level down, to a single page instead of the whole
+app. Everything else in a feature — `components/`, `api.ts`, `types.ts`,
+`hooks/` — stays exactly as isolated as before. Verified with the same
+smoke-test method as the original boundaries setup: a temporary
+cross-feature import from a `pages/*` file confirmed allowed, the
+identical import from a `components/*` file confirmed still rejected,
+both removed after confirming.
+
+`JournalEntriesCard` itself lives in `features/journal/components/` (not
+`features/trading/components/`), since it owns Journal's own read/write
+logic — `TradeDetailPage` imports it directly, the one place in this
+architecture now permitted to do so.
+
+### A real bug caught by E2E, not written into the app
+
+`JournalEntryForm`'s period-scoped fields and `JournalListPage`'s own
+date-range filter both originally used `id="period_start"`/
+`id="period_end"`. When the "+ New Entry" modal is open on the Journal
+List page, both sets of inputs are mounted simultaneously — duplicate
+DOM IDs broke `<label htmlFor>` association, which `e2e/journal.spec.ts`
+caught immediately (`getByLabel("Period Start")` timing out, confirmed
+via the page snapshot: the input existed but carried no accessible
+name). Fixed by renaming the modal's fields to `entry_period_start`/
+`entry_period_end`.
+
+### Added
+- Backend: `backend/alembic/versions/0010_create_journal_schema.py`;
+  `app/modules/journal/{domain/journal_entry.py,infrastructure/{models,
+  repository}.py,application/{create,get,list,update,delete}_journal_
+  entry.py,presentation/{schemas,router,pagination}.py}`;
+  `app/modules/trading/application/get_trade_by_id.py`; router registered
+  in `app/main.py`; `tests/journal/test_journal_flow.py` (28 tests).
+  `tests/conftest.py` and the four dedicated-engine concurrency test
+  files (`tests/platform/test_idempotency_concurrency.py`,
+  `tests/configuration/test_publish_concurrency.py`,
+  `tests/configuration/test_seed_bias_engine.py`,
+  `tests/trading/test_reevaluate_concurrency.py`) updated to create the
+  new `journal` schema — `Base.metadata` is process-wide, so every test
+  file's own `create_all` needed it once `journal_models` was imported
+  anywhere.
+- Frontend: `src/features/journal/{types,api,queryKeys,schemas}.ts`
+  (+ `schemas.test.ts`); `components/{JournalEntryForm,
+  JournalEntriesCard}.tsx` (+ `JournalEntryForm.test.tsx`);
+  `pages/{JournalListPage,JournalEntryDetailPage}.tsx` (replacing the old
+  `JournalPage.tsx` placeholder). `src/features/trading/pages/
+  TradeDetailPage.tsx` updated to render `JournalEntriesCard` in place of
+  its own placeholder. New routes: `/journal`, `/journal/:entryId`
+  (`src/router.tsx`). `eslint.config.js`: new `page` element + policy.
+- `e2e/journal.spec.ts` (3 tests).
+
+### Verification performed
+- Backend: `pytest` — **267 passed** (28 new; 239 carried over); `ruff
+  format --check` / `ruff check` / `mypy app` — clean (167 source files).
+- Frontend: `tsc --noEmit` — clean; `eslint .` — clean, zero warnings,
+  zero `boundaries/dependencies` violations (including the new `page`
+  element, smoke-tested both directions); `vitest run` — **66 passed**
+  (12 test files, 12 new); `vite build` — succeeds (317 modules).
+- E2E: `playwright test` — **17 tests, 16 passed, 1 pre-existing
+  documented flake** (the same `evaluation-preview.spec.ts` Configuration-
+  publish race already recorded in the prior entry, reconfirmed unrelated
+  via isolated re-run) — including all 3 new `journal.spec.ts` tests and
+  the full pre-existing suite, zero regressions.
+- Audit: `grep` confirms zero TODO/FIXME in any new file, zero
+  `console.log`; the first-attempt cross-module violation
+  (`journal → trading.infrastructure` direct import) was caught and
+  fixed before this pass, not left in; the local dev stack (Postgres
+  container, `uvicorn` process) spun up only for this verification was
+  torn down afterward.
+
+### Confirmation
+No `git push` was run at any point.

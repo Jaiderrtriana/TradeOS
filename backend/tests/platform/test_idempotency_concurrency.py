@@ -48,7 +48,14 @@ async def concurrency_engine():
             # test file's create_all sees the same full metadata), so
             # every schema any module declares must exist here too, even
             # though this suite only actually touches `platform`.
-            for schema in ("platform", "identity", "preferences", "configuration", "trading"):
+            for schema in (
+                "platform",
+                "identity",
+                "preferences",
+                "configuration",
+                "trading",
+                "journal",
+            ):
                 await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
             await conn.run_sync(Base.metadata.create_all)
             # This suite never actually inserts an identity.user_accounts

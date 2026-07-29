@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 
 import { ApiError } from "../../../api/errors";
+import { JournalEntriesCard } from "../../journal/components/JournalEntriesCard";
 import { getTrade } from "../api";
 import { ActionBar } from "../components/ActionBar";
 import { EvaluationSummaryCard } from "../components/EvaluationSummaryCard";
@@ -17,11 +18,12 @@ import { tradingKeys } from "../queryKeys";
  * (`TRADEOS_API_SPECIFICATION.md` §8) — this page's Not Found state
  * covers both the same way.
  *
- * `JournalEntriesCard` is a placeholder here: the Journal module
- * (Phase 5) doesn't exist yet, so there is no endpoint to read
- * trade-scoped journal entries from — this card names that explicitly
- * rather than silently omitting the section the Blueprint's own
- * component tree calls for.
+ * `JournalEntriesCard` lives in `features/journal/` and is imported
+ * directly here (Sprint 5.1) — this page is the one place in this
+ * architecture permitted to compose another feature's component
+ * (`eslint.config.js`'s `page` element), since a page assembling cards
+ * from multiple Bounded Contexts is exactly what this Blueprint's own
+ * wireframes already call for.
  */
 export function TradeDetailPage() {
   const { tradeId } = useParams<{ tradeId: string }>();
@@ -72,14 +74,7 @@ export function TradeDetailPage() {
       <TradeSummaryCard trade={trade} />
       <EvaluationSummaryCard tradeId={trade.id} evaluation={trade.evaluation} />
       <MistakesCard tradeId={trade.id} />
-
-      <div className="rounded border border-border bg-bg-surface p-4">
-        <h2 className="text-base font-semibold text-text-primary">Journal</h2>
-        <p className="mt-2 text-sm text-text-secondary">
-          The Journal module isn&apos;t built yet — trade-scoped journal entries will appear here
-          once it ships.
-        </p>
-      </div>
+      <JournalEntriesCard tradeId={trade.id} />
 
       <ActionBar trade={trade} />
     </div>

@@ -49,6 +49,21 @@ export default tseslint.config(
       // own "80+ pages, 150+ components" scale test is exactly where
       // that discipline stops being reliable on its own.
       "boundaries/elements": [
+        // Pages are this architecture's own composition points — the
+        // Frontend Blueprint's own wireframes have a page assembling
+        // cards from multiple Bounded Contexts onto one screen (e.g.
+        // TradeDetailPage hosting TradeSummaryCard/EvaluationSummaryCard
+        // (Trading), MistakesCard (Trading's own mistakes endpoints),
+        // and JournalEntriesCard (a genuinely separate `journal`
+        // feature) — Sprint 5.1). Matched *before* the broader `feature`
+        // pattern below so a `pages/*` file gets this permissive
+        // treatment instead, mirroring the composition-root exception's
+        // own stated rationale ("legitimately need to import from every
+        // feature to wire the app together") applied one level down, to
+        // a single page rather than the whole app. Everything else in a
+        // feature (components/, api.ts, types.ts, hooks/) stays strictly
+        // isolated — only `pages/` gets this.
+        { type: "page", pattern: "src/features/*/pages", capture: ["feature"] },
         { type: "feature", pattern: "src/features/*", capture: ["feature"] },
         { type: "shared", pattern: "src/shared" },
         { type: "component", pattern: "src/components" },
@@ -79,6 +94,18 @@ export default tseslint.config(
         {
           default: "disallow",
           policies: [
+            {
+              // Pages compose freely across every feature and shared
+              // layer — see the `page` element's own comment above.
+              from: { element: { type: "page" } },
+              allow: {
+                to: {
+                  element: {
+                    types: { anyOf: ["page", "feature", "shared", "component", "api", "auth", "layout"] },
+                  },
+                },
+              },
+            },
             {
               from: { element: { type: "feature" } },
               allow: {

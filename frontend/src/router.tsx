@@ -6,7 +6,8 @@ import { RegisterPage } from "./features/authentication/pages/RegisterPage";
 import { ConfigurationPage } from "./features/configuration/pages/ConfigurationPage";
 import { DashboardPage } from "./features/dashboard/pages/DashboardPage";
 import { EvaluationPage } from "./features/evaluation/pages/EvaluationPage";
-import { JournalPage } from "./features/journal/pages/JournalPage";
+import { JournalEntryDetailPage } from "./features/journal/pages/JournalEntryDetailPage";
+import { JournalListPage } from "./features/journal/pages/JournalListPage";
 import { MistakesPage } from "./features/mistakes/pages/MistakesPage";
 import { PlaybookPage } from "./features/playbook/pages/PlaybookPage";
 import { PreferencesPage } from "./features/settings/pages/PreferencesPage";
@@ -41,7 +42,8 @@ export function AppRouter() {
         <Route path="/trades/:tradeId" element={<TradeDetailPage />} />
         <Route path="/trades/:tradeId/evaluation" element={<RuleExplorerPage />} />
         <Route path="/playbook" element={<PlaybookPage />} />
-        <Route path="/journal" element={<JournalPage />} />
+        <Route path="/journal" element={<JournalListPage />} />
+        <Route path="/journal/:entryId" element={<JournalEntryDetailPage />} />
         <Route path="/statistics" element={<StatisticsPage />} />
         <Route path="/mistakes" element={<MistakesPage />} />
         <Route path="/evaluation" element={<EvaluationPage />} />
