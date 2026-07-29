@@ -200,6 +200,48 @@ class TradeRepository:
         result_rows = await self._session.execute(query)
         return [_trade_to_domain(row) for row in result_rows.scalars()]
 
+    async def list_all_facts_for_statistics(
+        self, user_id: uuid.UUID
+    ) -> list["TradeStatisticsFact"]:
+        """`StatisticsAggregationService` (Sprint 6.1): every one of this
+        user's non-deleted Trades, in one unbounded query -- never cursor-
+        paginated like `list_all` above, since an all-time aggregation
+        needs the complete set, not one page of it. Only the raw columns
+        the aggregation actually needs (`TRADEOS_DATABASE_DESIGN.md`
+        §6.9) -- `r_multiple` is computed later, by the caller, via
+        `compute_r_multiple` (never duplicated here); Evaluation scores
+        are a separate batched read (`EvaluationSnapshotRepository.
+        list_current_by_trade_ids`), not this query's concern."""
+        result = await self._session.execute(
+            select(
+                TradeModel.id,
+                TradeModel.direction,
+                TradeModel.result,
+                TradeModel.realized_pnl,
+                TradeModel.entry_price,
+                TradeModel.stop_loss,
+                TradeModel.exit_price,
+                TradeModel.strategy_id,
+                TradeModel.setup_id,
+                TradeModel.session_id,
+            ).where(TradeModel.user_id == user_id, TradeModel.deleted_at.is_(None))
+        )
+        return [
+            TradeStatisticsFact(
+                id=row.id,
+                direction=row.direction,
+                result=row.result,
+                realized_pnl=_as_float(row.realized_pnl),
+                entry_price=_as_float(row.entry_price),
+                stop_loss=_as_float(row.stop_loss),
+                exit_price=_as_optional_float(row.exit_price),
+                strategy_id=row.strategy_id,
+                setup_id=row.setup_id,
+                session_id=row.session_id,
+            )
+            for row in result.all()
+        ]
+
 
 @dataclass(frozen=True)
 class TradeListCursor:
@@ -209,6 +251,28 @@ class TradeListCursor:
 
     entered_at: datetime
     id: uuid.UUID
+
+
+@dataclass(frozen=True)
+class TradeStatisticsFact:
+    """One Trade's raw fields for `StatisticsAggregationService` --
+    exactly what `compute_r_multiple` and the by-dimension grouping need,
+    nothing else. Kept in `infrastructure/` (not `domain/`), same
+    reasoning as `MistakeTradeFact` (Sprint 5.2): a query-result shape,
+    not a domain concept. `trading/application/list_trade_statistics_
+    facts.py` enriches it with `r_multiple` and Evaluation scores before
+    handing it to Statistics' own domain layer."""
+
+    id: uuid.UUID
+    direction: str
+    result: str
+    realized_pnl: float
+    entry_price: float
+    stop_loss: float
+    exit_price: float | None
+    strategy_id: uuid.UUID | None
+    setup_id: uuid.UUID | None
+    session_id: uuid.UUID | None
 
 
 class ChecklistSnapshotRepository:

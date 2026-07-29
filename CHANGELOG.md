@@ -3230,3 +3230,151 @@ both `cost` and `-cost`.
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Sprint 6.1 — Statistics Overview & By-Dimension
+
+`StatisticsAggregationService`'s all-time computation — `TRADEOS_
+IMPLEMENTATION_MASTER_PLAN.md` Sprint 6.1. Backend only:
+`GET /statistics/overview`, `GET /statistics/by-dimension`. Rolling
+Statistics and the frontend are Sprint 6.2. Pre-analysis re-read
+`TRADEOS_DOMAIN_MODEL.md` §2.3/§4.5/§9/§11/§12.2/§14-15/KDD-04,
+`TRADEOS_BACKEND_BLUEPRINT.md` §3.9/§4.8/§5/§6/§19-21, `TRADEOS_API_
+SPECIFICATION.md` §5/§6.10/§7.4/§18-19, `TRADEOS_FRONTEND_BLUEPRINT.md`
+§4.2/§5.6/§8.6/§11/§12/§20, `TRADEOS_PRODUCT_BIBLE.md` §4.2/§7/§9/
+§10.1-10.2/§12.2/§15, `TRADEOS_DATABASE_DESIGN.md` §3/§6.9/§6.12/§10.2,
+ADR-04, and the actual repo state.
+
+### Three genuine gaps, none previously registered as an open question anywhere
+
+Win Rate and Total P&L turned out to be precisely defined by literal
+citation ("the proportion of closed Trades that resulted in TP" —
+resolving even the break-even question directly: BE is closed, so it's
+in the denominator, but never the numerator). Expectancy, Profit Factor,
+and by-dimension's null-bucket behavior were not — confirmed absent
+across every numbered open question in all seven frozen documents
+(Product Bible §15, API Spec §18, Backend Blueprint §21's BE-1 through
+BE-10) before stopping to ask. Your approved resolutions:
+
+- **Expectancy** = **Average R** = mean of `r_multiple` across every
+  closed Trade (open Trades excluded; break-even Trades participate with
+  their own real, usually-near-zero `r_multiple`). The two Domain-Model-
+  named metrics are numerically identical under this formula — both
+  fields still exist in the response, since the Domain Model names them
+  as two separate outputs.
+- **Profit Factor** = `gross_profit_r / gross_loss_r`, R-multiple-based
+  (never `realized_pnl`-based — consistent with Expectancy/Average R,
+  same reasoning Sprint 5.2 approved for Mistakes' "cost"). Zero gross
+  loss → `None`, never `Infinity`/`NaN`/an exception — the same
+  convention `compute_r_multiple` already established for its own
+  division.
+- **Null-dimension bucketing**: a Trade with no `strategy_id`/`setup_id`/
+  `session_id` groups into an explicit `"unassigned"` bucket in
+  `GET /statistics/by-dimension` — never silently dropped from the
+  aggregation. `direction` never produces this bucket (it's never `NULL`
+  on a Trade).
+
+Two secondary ambiguities resolved without a question, by direct
+reasoning (not circular precedent): pagination — a bare, unwrapped JSON
+object (`overview`) / array (`by-dimension`), architecturally identical
+to Mistakes Ranking's own on-demand, never-cached computation
+(ADR-04/KDD-04), confirmed by API Spec §6.10's "pure reads with no side
+effects and no persisted result" and §7.4's envelope being scoped to
+"list endpoint[s]" (Statistics is never called one); and Win Rate's raw
+0-1 ratio (never pre-multiplied by 100), same convention `Trade.
+captured_pct` already established.
+
+### A documentary contradiction resolved by weight of evidence, not by asking
+
+Backend Blueprint §6 (Repository Blueprint) names only `TradeRepository`/
+`CatalogRepository` as Statistics' read paths, never mentioning
+Evaluation — apparently contradicting §3.9's own "Dependencies: Trading,
+Evaluation (both read-only)," API Spec §19 ("reads `trading` +
+`evaluation` data"), ADR-04 ("computed fresh from Trading + Evaluation
+data"), and the Frontend Blueprint's own wireframe requiring "engine
+averages." Resolved without asking: `EvaluationSnapshotRepository`
+already lives inside `trading/infrastructure/repository.py` (established
+since Sprint 4.1 — `evaluation_snapshots` is a `trading`-schema table,
+not a separate module's schema), so "reading Trading + Evaluation" and
+"reading only through `TradeRepository`" describe the exact same thing
+at the code level — the Repository Blueprint's omission is an incomplete
+enumeration, not a deliberate exclusion.
+
+Three more broken/loose citations noted, not corrected: API Spec §6
+promises `GET /statistics/by-dimension` "full prose detail" (one of only
+8 endpoints named that way) but §6.10 delivers a bare 3-row table with an
+empty Notes cell; Backend Blueprint §20's Statistics row cites its own
+nonexistent "§5.2" (Section 5 has no subsections — the same class of
+defect as the "§5.3"/"§6.10-6.11" citations already flagged in the
+Sprint 5.1/5.2 entries, this time newly caught for a row nobody had
+checked yet); and Domain Model §4.5/Product Bible §9 both list a "time"
+dimension no operational document (Master Plan, API Spec, Frontend
+Blueprint) actually implements — the real `by-dimension` enum stays at
+exactly four values (strategy/setup/session/direction), consistent
+everywhere it's operationally defined; `entry_trigger` was confirmed
+excluded the same way.
+
+### Architecture
+
+Two-query, zero-N+1 design, mirroring Sprint 5.2's `list_trade_facts_
+for_ranking` precedent exactly: `TradeRepository.list_all_facts_for_
+statistics(user_id)` (one unbounded query — deliberately not `list_all`,
+which is cursor-paginated and capped) + `EvaluationSnapshotRepository.
+list_current_by_trade_ids` (already existed since Sprint 4.1, reused
+unchanged) — combined by a new `ListTradeStatisticsFactsUseCase`
+(Trading's own Application layer), exposed to Statistics via
+`build_list_trade_statistics_facts_use_case`, never a repository
+directly. Catalog names for `strategy`/`setup`/`session` groups resolve
+through `build_list_catalog_entries_use_case` (Sprint 5.2, unchanged).
+`Configuration`'s `list_catalog_entries.py` and `Trading`'s own domain/
+infrastructure files are the only pre-existing files touched; neither
+`Trading` nor `Configuration` imports anything from `Statistics` —
+confirmed by `grep`, zero results. All aggregation math lives in one
+pure, dependency-free module (`statistics/domain/statistics_aggregation.py`
+— no repository access, no SQL, no FastAPI import anywhere in it);
+`GetStatisticsOverviewUseCase`/`GetStatisticsByDimensionUseCase` only
+orchestrate, never compute. No new table, no migration, no cache, no new
+dependency — `Statistics` owns no persistence, per Backend Blueprint
+§3.9 exactly.
+
+### A real discovery, not a bug: engine scores are 0, never `None`, with zero criteria configured
+
+The first version of `test_overview_averages_engine_scores_skipping_none`
+asserted an engine with no criteria configured would average to `None`.
+It returned `0.0` instead — traced to `score_quality`'s own signature
+(and every other engine's), which always returns a real `Score`, never
+`None`; a weighted sum over zero criteria is legitimately `0`, not "not
+yet computable." Confirmed this is correct, existing behavior (`evaluation_
+snapshots`' nullable score columns exist only for a *future* sixth engine
+that wouldn't exist on historical snapshots, never for today's five,
+which always compute). Fixed the test's expectation, not the code, and
+added a dedicated pure-domain unit test (`test_statistics_aggregation.py`,
+mirroring the `tests/evaluation/test_confidence_engine.py` precedent) to
+exercise the genuine `None`-skip path directly, since today's real system
+never produces one through the HTTP stack to test against.
+
+### Added
+- Backend: `backend/app/modules/statistics/{domain/statistics_
+  aggregation.py,application/{get_statistics_overview,get_statistics_by_
+  dimension,mapping}.py,presentation/{schemas,router}.py}`;
+  `app/modules/trading/application/list_trade_statistics_facts.py`;
+  `TradeRepository.list_all_facts_for_statistics` + `TradeStatisticsFact`
+  (`trading/infrastructure/repository.py`); router registered in
+  `app/main.py`; `tests/statistics/{test_statistics_flow.py (21 tests,
+  including the literal Exit Criteria — a hand-computed Win Rate/
+  Expectancy over a controlled Trade set), test_statistics_aggregation.py
+  (12 pure unit tests)}`.
+
+### Verification performed
+- `pytest` — **299 passed** (33 new; 266 carried over), zero
+  regressions; `ruff format --check` / `ruff check` / `mypy app` — clean
+  (179 source files).
+- Audit: `grep` confirms zero TODO/FIXME, zero imports of `statistics`
+  from `trading`/`configuration`/`journal`/`mistakes` (correct one-way
+  dependency direction); zero changes to `pyproject.toml`/`poetry.lock`
+  (no new dependency); zero new migrations, tables, indexes, or cache;
+  zero frontend changes (confirmed by `git status`, matching this
+  sprint's backend-only scope exactly); the local Postgres container
+  spun up only for this verification was torn down afterward.
+
+### Confirmation
+No `git push` was run at any point.
