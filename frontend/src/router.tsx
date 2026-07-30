@@ -10,7 +10,8 @@ import { EvaluationPage } from "./features/evaluation/pages/EvaluationPage";
 import { JournalEntryDetailPage } from "./features/journal/pages/JournalEntryDetailPage";
 import { JournalListPage } from "./features/journal/pages/JournalListPage";
 import { MistakesRankingPage } from "./features/mistakes/pages/MistakesRankingPage";
-import { PlaybookPage } from "./features/playbook/pages/PlaybookPage";
+import { PlaybookListPage } from "./features/playbook/pages/PlaybookListPage";
+import { PlaybookSetupDetailPage } from "./features/playbook/pages/PlaybookSetupDetailPage";
 import { PreferencesPage } from "./features/settings/pages/PreferencesPage";
 import { TradeDetailPage } from "./features/trading/pages/TradeDetailPage";
 import { TradesListPage } from "./features/trading/pages/TradesListPage";
@@ -57,7 +58,8 @@ export function AppRouter() {
         <Route path="/trades" element={<TradesListPage />} />
         <Route path="/trades/:tradeId" element={<TradeDetailPage />} />
         <Route path="/trades/:tradeId/evaluation" element={<RuleExplorerPage />} />
-        <Route path="/playbook" element={<PlaybookPage />} />
+        <Route path="/playbook" element={<PlaybookListPage />} />
+        <Route path="/playbook/:setupId" element={<PlaybookSetupDetailPage />} />
         <Route path="/journal" element={<JournalListPage />} />
         <Route path="/journal/:entryId" element={<JournalEntryDetailPage />} />
         <Route

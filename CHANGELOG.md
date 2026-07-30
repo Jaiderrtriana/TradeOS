@@ -3747,3 +3747,115 @@ own lifecycle diagram (`Active -> Deprecated`, no third state).
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Sprint 7.2 — Playbook Frontend
+
+Phase 7 of the Implementation Master Plan, closing sprint — Milestone M7
+is achieved. Scope (`TRADEOS_IMPLEMENTATION_MASTER_PLAN.md`): *"Playbook
+List, Playbook Setup Detail pages. Deliverables: a trader can view and
+edit setup documentation alongside genuinely live performance data."*
+
+### No genuine business gap this sprint
+
+- **Creation flow, not named in the Master Plan bullet or in either
+  page's "Key API Dependency" column**: resolved by the direct precedent
+  of Journal List (Sprint 5.1), whose own compact row is equally
+  abbreviated yet still shipped a "+ New Entry" flow. Reinforced by the
+  Empty State principle (§2.10): an empty list must always explain "what
+  to do next," which requires a reachable create action.
+- **Attachments UI**: a text/URL input for `file_reference`, never a
+  real `<input type="file">`/upload — mechanically determined by Sprint
+  7.1's already-frozen backend contract (a caller-supplied reference
+  string only), cross-confirmed by OQ-6 (object storage provider)
+  remaining unresolved and explicitly non-blocking for Phase 7.
+- **`CatalogPickerModal` reused in place**, imported directly from
+  `features/trading/components/` into Playbook's own page via the
+  `"page"` `eslint-plugin-boundaries` exception (Sprint 5.1) — not moved
+  to `src/components/`, avoiding an unforced change to Trading's
+  already-shipped file structure.
+
+### Bugs found and fixed during implementation
+
+- **A real, pre-existing bug in Trading's `ProForm.tsx`** (Sprint 4.4,
+  unrelated to Playbook's own contract): an untouched optional Select
+  (Strategy/Session/Entry Trigger) submits an empty string rather than
+  omitting the field, and the backend correctly rejects `""` as an
+  invalid UUID (`422`) — confirmed independently via direct `curl`
+  against `POST /trades` (`strategy_id: ""` → *"Input should be a valid
+  UUID, invalid length: expected length 32... found 0"*). Discovered
+  while first writing the "performance sourced from a real Trade" E2E
+  fixture through the Trade Entry UI. **Not fixed** — modifying another
+  module's already-shipped form is out of Sprint 7.2's scope (Playbook
+  Frontend only); the E2E fixture instead creates and closes the Trade
+  via direct API calls (`page.request.post`), the same "bypass the UI
+  for fixture setup" precedent already used for catalog entries here and
+  for Mistake tags in `mistakes.spec.ts`. Registered here for visibility,
+  not silently worked around.
+- **A stale `uvicorn` process from the Sprint 6.2 E2E session** was still
+  bound to port 8000 (confirmed via `Get-NetTCPConnection`/`Get-Process`
+  — started `2026-07-29 22:57`, well before Playbook's router existed),
+  silently shadowing every fresh backend start this sprint and returning
+  `404 Not Found` for every `/playbook-setups` request. Not a code
+  defect — a leftover background process never killed in an earlier
+  session's cleanup. Killed and replaced with a fresh process before any
+  E2E test was trusted.
+- Two E2E selector-strictness bugs, both caught by the first real test
+  run: `getByRole(..., { name })` matches substrings case-insensitively
+  by default, so `"Linked-<suffix>"` matched `"Unlinked-<suffix>"` too,
+  and the bare `"Setup"` label matched a Bias-engine checklist field
+  named `"Valid Setup"` — both fixed with `{ exact: true }`.
+
+### Architecture
+
+`features/playbook/{types,api,queryKeys,schemas}.ts` mirror Sprint 7.1's
+backend contract field-for-field (re-verified directly against
+`backend/app/modules/playbook/presentation/schemas.py`, not from
+memory). `EditPlaybookSetupModal` always submits all four text fields
+together, pre-filled via React Hook Form's `values` option so the form
+stays synced to the setup's real current state — the same
+"resend-the-full-current-or-edited-state" discipline `AmendTradeModal`
+already applies to Trade, which is what actually guarantees an untouched
+field can never be silently lost even though the backend's own `PATCH`
+is genuinely partial. Every mutation (`create`/`update`/`deprecate`/
+`add attachment`/`delete attachment`) invalidates both `playbookKeys.
+list()` and `playbookKeys.detail(id)` where applicable, mirroring
+`AmendTradeModal`'s own dual-invalidation pattern. `performance` is
+rendered by `PerformanceCard` directly from the already-composed
+`PlaybookSetupDetail.performance` object returned by `GET /playbook-
+setups/{id}` — no client-side computation, no fallback value, no
+formula, anywhere in this feature. Zero new dependency (`Recharts` not
+needed — Playbook's own Key Components, per the Traceability Matrix, are
+`DataTable, MetricCard` only).
+
+### Added
+- Frontend: `src/features/playbook/{types,api,queryKeys,schemas}.ts` (+
+  `schemas.test.ts`, 4 unit tests); `components/{PerformanceCard,
+  EditPlaybookSetupModal,AttachmentsCard,AddAttachmentModal}.tsx`;
+  `pages/{PlaybookListPage,PlaybookSetupDetailPage}.tsx` (the latter
+  replaces the Sprint-0-era `PlaybookPage.tsx` placeholder, now
+  deleted). `router.tsx` — `/playbook` repointed, `/playbook/:setupId`
+  added. `e2e/playbook.spec.ts` (4 tests).
+
+### Verification performed
+- Frontend: `tsc -b --noEmit` — clean; `eslint .` — clean (boundaries
+  rules respected, `CatalogPickerModal` cross-feature import allowed only
+  via the `"page"` exception); `vitest run` — **77 passed** (4 new; 73
+  carried over); `vite build` — succeeds (Playbook adds no dependency
+  heavy enough to need lazy-loading, unlike Statistics/Recharts).
+- E2E: real stack (Docker Postgres 16 + `uvicorn` + Chromium/Playwright,
+  never mocked) — `e2e/playbook.spec.ts` 4/4, stable across 3 repeated
+  runs. Full suite: **25/25 passed**; one pre-existing, unrelated
+  debounce-timing flake in `evaluation-preview.spec.ts` under parallel
+  load, confirmed passing cleanly 4/4 in isolation — same category of
+  flake already documented in Sprint 6.2's closing report, not a
+  regression introduced here.
+- Backend: no backend files changed this sprint; full backend `pytest`
+  suite not re-run (no shared code touched — only the already-frozen
+  Playbook/Statistics contracts were *read*, never modified).
+- Audit: zero TODO/FIXME, zero `console.log`/debug statements in any new
+  or modified file; `git status` confirms the diff surface is exactly
+  the Playbook feature + `router.tsx` — no Trading file touched despite
+  the bug found in `ProForm.tsx`.
+
+### Confirmation
+No `git push` was run at any point.
