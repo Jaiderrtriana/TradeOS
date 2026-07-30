@@ -3579,3 +3579,171 @@ unaffected by this sprint.
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Sprint 7.1 — Playbook Backend
+
+Phase 7 of the Implementation Master Plan, first sprint — the last
+confirmed Bounded Context module. Scope
+(`TRADEOS_IMPLEMENTATION_MASTER_PLAN.md`): *"`PlaybookSetup` CRUD,
+attachments, 1:1 linkage to a `kind=setup` Catalog entry. Deliverables:
+Playbook definitions manageable via the API; performance data explicitly
+never stored on the setup itself, always a live Statistics read. Exit
+Criteria: a Playbook Setup's performance figures match the equivalent
+Statistics by-dimension query for that same Setup, exactly."*
+`PlaybookRecommendationService` (named only in Phase 7's broader
+narrative, not in this sprint's own bullet, and confirmed by Known Gap
+BE-4 to have no confirmed endpoint) is explicitly out of scope.
+
+### No genuine business gap this sprint
+
+Pre-analysis resolved every question by literal citation or by
+established precedent — no `AskUserQuestion` was needed:
+
+- **`PlaybookSetup` is global, not scoped by `user_id`** — API Spec line
+  101, cited literally: *"PlaybookSetup are, today, global to the single
+  user — not yet modeled as owned by anyone specifically."* First module
+  in this project without per-user ownership filtering.
+- **Attachments persist only a caller-supplied reference, never file
+  bytes** — cross-checked across three documents: Database Design §6.16
+  ("the actual file lives in object storage... this schema stores only
+  the reference"), Technical Stack §6.12 (object storage provider
+  unchosen, Open Question OQ-6), and the Master Plan's own §16 blocking-
+  questions list, which excludes OQ-6 entirely — if Phase 7 needed real
+  file storage, it would be listed there as blocking, the way OQ-1/OQ-4
+  block Phase 9.
+- **No `DELETE /playbook-setups/{id}`** — not in the confirmed endpoint
+  table (§6.8); Domain Model §13.4's lifecycle is `Active -> Deprecated`
+  only, no third state.
+- **422, not `is_active`, gates creation** — the literal citation lists
+  exactly two conditions ("not `kind=setup`," "already linked"); no
+  active-status check exists here, deliberately diverging from
+  `TagMistakeUseCase`'s superficially similar but differently-scoped
+  check.
+- **`name` is not a `PlaybookSetup` column** — Domain Model §8.8 calls it
+  "Owned Information," but Database Design §6.15's real column list has
+  neither `name` nor `description` (a documentary contradiction, noted
+  not corrected). Resolved by precedent: `name` is resolved transitively
+  from `catalog_entries.name`, the exact pattern `GetMistakeRankingUseCase`
+  already established (Sprint 5.2).
+- **`PlaybookSetupUpdated` fires on Update/Deprecate, never Create** — no
+  document names a "Created" event for Playbook anywhere, unlike
+  Trading's explicit `TradeRegistered`/`TradeAmended` split.
+
+### Architecture
+
+Domain: `PlaybookSetup`, `PlaybookSetupAttachment` — plain dataclasses,
+no numbered Domain Invariant exists for either, so neither has a
+`__post_init__` validator (a deliberate absence, not an oversight — the
+four text fields are mutually independent). Application: 7 Use Cases
+(`Create`/`Update`/`Deprecate`/`Get`/`List` `PlaybookSetup`,
+`Add`/`Delete` attachment), each doing orchestration only. Infrastructure:
+`PlaybookSetupRepository`/`PlaybookSetupAttachmentRepository`, zero
+`user_id` filtering anywhere (the one deliberate architectural departure
+from every other module). Presentation: 7 endpoints exactly matching API
+Spec §6.8, cursor pagination for `GET /playbook-setups` (a real persisted
+collection, not exempted like Mistakes/Statistics), `Idempotency-Key`
+support on both resource-creating `POST`s.
+
+Cross-module dependencies, both via `build_*` factories, never a
+repository directly: `playbook -> configuration` (`build_get_catalog_entry_use_case`,
+`build_list_catalog_entries_use_case`, both pre-existing, unchanged) and
+`playbook -> statistics` (`build_get_statistics_by_dimension_use_case`,
+**new** — Statistics' first cross-module consumer; added to
+`get_statistics_by_dimension.py`, mirroring `build_list_trade_statistics_
+facts_use_case`'s exact shape, with zero change to `GetStatisticsByDimensionUseCase`'s
+own behavior or to any Statistics HTTP contract). Confirmed by `grep`:
+`playbook` never imports `trading` directly; no module imports `playbook`
+back (one-way dependency direction intact). Zero new backend dependency.
+
+**Statistics composition, verified same-identifier by construction**:
+`GetPlaybookSetupUseCase` calls `GetStatisticsByDimensionUseCase.execute(user_id,
+"setup")` and selects the group where `group.dimension_value == str(setup.catalog_entry_id)`
+— the identical UUID that gates the 1:1 link at creation time, so the
+Exit Criteria ("match... exactly") holds by construction, not by
+coincidence. No group found (no Trades yet) -> a locally-built all-`None`/
+`total_pnl=0` `StatisticsSummary`, the same shape `aggregate_statistics([])`
+already produces, never a different "no data" representation invented
+here. Verified end-to-end by `test_exit_criteria_performance_matches_
+statistics_by_dimension_exactly`, comparing all 10 `StatisticsSummary`
+fields field-by-field against `GET /statistics/by-dimension` directly,
+plus two independently hand-computed values.
+
+### Bugs found and fixed during implementation
+
+- **N+1 in the list endpoint's name resolution.** The first draft of
+  `_resolve_names` looped over the page calling `GetCatalogEntryUseCase`
+  once per setup, with an `if catalog_entry_id in names: continue` guard
+  that looked like deduplication but never actually fired — every setup
+  has a *distinct* `catalog_entry_id` (the 1:1 `UNIQUE` constraint
+  guarantees it), so the guard was dead code and every row triggered its
+  own query. Fixed before any test ran, by batching through
+  `ListCatalogEntriesUseCase.execute("setup")` once per page (the exact
+  pattern `GetStatisticsByDimensionUseCase` already uses for its own
+  catalog-backed dimensions).
+- **Missing `IntegrityError` -> `ConflictError` backstop on `Create`.**
+  The pre-check (`get_by_catalog_entry_id`) alone cannot close a genuine
+  concurrent-request race — two callers can both pass it before either
+  commits. `CreatePlaybookSetupUseCase` initially had no `session` parameter
+  and no `flush()`/`except IntegrityError` handling at all, unlike
+  `TagMistakeUseCase`'s equivalent dual-layer check. Fixed by adding
+  `session: AsyncSession` to the constructor and catching `IntegrityError`
+  on flush, translating it to `ConflictError` (409) — caught by a
+  dedicated real-concurrency test (`test_playbook_setup_concurrency.py`,
+  a genuinely separate Postgres container and two truly concurrent
+  transactions via `asyncio.gather`, same pattern as
+  `test_publish_concurrency.py`) before being fixed.
+- **A leftover `del user_id`** in both resource-creating endpoints,
+  written while reasoning through "this resource has no ownership check"
+  — but `user_id` is still needed to scope the `Idempotency-Key` claim
+  (per authenticated caller, unrelated to resource ownership). Caught by
+  re-reading the draft before running anything, not by a failing test.
+- **Two test-authoring mistakes**, caught by the first test run, not by
+  review: `GET /catalogs`'s actual response is a bare list, not a
+  pagination envelope, breaking `test_deprecate_does_not_affect_the_
+  linked_catalog_entrys_active_status`'s assumption; and the concurrency
+  test's first draft asserted the loser must always raise `ConflictError`
+  specifically, when `asyncio` scheduling can equally validly resolve
+  the race as a clean, pre-check-caught `UnprocessableEntityError` (422)
+  instead — both are correct "never two rows" outcomes, so the assertion
+  was relaxed to accept either, with the real invariant (exactly one row
+  ever exists) still checked directly against the database. Verified
+  stable across 3 repeated runs after the fix.
+
+### Documentary defects noted, not corrected
+
+Domain Model §8.8 lists `name`/`description` as `PlaybookSetup`'s own
+"Owned Information"; Database Design §6.15's actual schema has neither
+column. Master Plan §8's Phase 7 narrative says "CRUD" generically;
+the literal endpoint table (§6.8) has no `DELETE /playbook-setups/{id}`,
+only `/deprecate` — resolved by cross-referencing Domain Model §13.4's
+own lifecycle diagram (`Active -> Deprecated`, no third state).
+
+### Added
+- Backend: `app/modules/playbook/` — `domain/{playbook_setup,
+  playbook_setup_attachment}.py`; `infrastructure/{models,repository}.py`;
+  `application/{create,update,deprecate,get,list}_playbook_setup.py` +
+  `application/{add,delete}_playbook_setup_attachment.py`;
+  `presentation/{schemas,pagination,router}.py`. Migration `0011_create_
+  playbook_schema.py` (`playbook` schema, `playbook_setups`,
+  `playbook_setup_attachments`, no additional index beyond PK/UNIQUE —
+  neither table's Database Design entry names one). `build_get_statistics_
+  by_dimension_use_case` added to `statistics/application/get_statistics_
+  by_dimension.py`. Router registered in `app/main.py`. Tests:
+  `tests/playbook/test_playbook_setup_flow.py` (26 integration tests,
+  including the literal Exit Criteria); `tests/playbook/test_playbook_
+  setup_concurrency.py` (1 real-concurrency test, dedicated Postgres
+  container).
+
+### Verification performed
+- `pytest` — **335 passed** (26 new; 309 carried over), zero regressions,
+  concurrency test stable across 3 repeated runs; `ruff format --check` /
+  `ruff check` / `mypy app` — clean (194 source files).
+- Audit: zero TODO/FIXME; `grep` confirms `playbook` never imports
+  `trading` directly and is never imported back by any other module
+  (one-way dependency direction intact); zero changes to `pyproject.toml`/
+  `poetry.lock` (no new dependency); zero print/debug statements; zero
+  frontend changes (backend-only sprint, matching scope exactly). Dev
+  Postgres container torn down after manual migration verification.
+
+### Confirmation
+No `git push` was run at any point.

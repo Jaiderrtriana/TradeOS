@@ -55,6 +55,7 @@ async def concurrency_engine():
                 "configuration",
                 "trading",
                 "journal",
+                "playbook",
             ):
                 await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
             await conn.run_sync(Base.metadata.create_all)

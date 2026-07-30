@@ -12,12 +12,23 @@ same pattern `GetMistakeRankingUseCase` already established (Sprint
 shape. `direction` needs no catalog lookup -- its own value ("long"/
 "short") is already the display value, same raw-string convention every
 other Trade-facing endpoint already uses.
+
+`build_get_statistics_by_dimension_use_case` (Sprint 7.1) is this
+module's first `build_*` factory -- Playbook's `GetPlaybookSetupUseCase`
+is the first consumer outside `statistics/presentation/router.py`. No
+change to this Use Case's own behavior or to `GET /statistics/by-dimension`'s
+HTTP contract.
 """
 
 import uuid
 from dataclasses import dataclass
 
-from app.modules.configuration.application.list_catalog_entries import ListCatalogEntriesUseCase
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.modules.configuration.application.list_catalog_entries import (
+    ListCatalogEntriesUseCase,
+    build_list_catalog_entries_use_case,
+)
 from app.modules.statistics.application.mapping import to_statistics_fact
 from app.modules.statistics.domain.statistics_aggregation import (
     UNASSIGNED,
@@ -26,6 +37,7 @@ from app.modules.statistics.domain.statistics_aggregation import (
 )
 from app.modules.trading.application.list_trade_statistics_facts import (
     ListTradeStatisticsFactsUseCase,
+    build_list_trade_statistics_facts_use_case,
 )
 
 _CATALOG_BACKED_DIMENSIONS = ("strategy", "setup", "session")
@@ -76,3 +88,17 @@ class GetStatisticsByDimensionUseCase:
                 )
             )
         return results
+
+
+def build_get_statistics_by_dimension_use_case(
+    session: AsyncSession,
+) -> GetStatisticsByDimensionUseCase:
+    """Factory exposed so another module's Application layer (Playbook's
+    `GetPlaybookSetupUseCase`, Sprint 7.1 -- the first cross-module
+    consumer of Statistics) can resolve by-dimension figures without ever
+    importing Statistics' or Trading's infrastructure layer directly --
+    same pattern as `build_list_trade_statistics_facts_use_case`."""
+    return GetStatisticsByDimensionUseCase(
+        build_list_trade_statistics_facts_use_case(session),
+        build_list_catalog_entries_use_case(session),
+    )

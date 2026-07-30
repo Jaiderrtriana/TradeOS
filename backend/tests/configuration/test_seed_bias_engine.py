@@ -80,6 +80,7 @@ async def bias_seed_session(monkeypatch):
             # suite only touches `configuration`.
             await conn.execute(text("CREATE SCHEMA IF NOT EXISTS trading"))
             await conn.execute(text("CREATE SCHEMA IF NOT EXISTS journal"))
+            await conn.execute(text("CREATE SCHEMA IF NOT EXISTS playbook"))
             await conn.run_sync(Base.metadata.create_all)
 
         session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)

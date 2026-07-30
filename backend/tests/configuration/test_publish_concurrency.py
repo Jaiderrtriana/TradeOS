@@ -60,6 +60,7 @@ async def concurrency_engine():
             # suite only touches `configuration`.
             await conn.execute(text("CREATE SCHEMA IF NOT EXISTS trading"))
             await conn.execute(text("CREATE SCHEMA IF NOT EXISTS journal"))
+            await conn.execute(text("CREATE SCHEMA IF NOT EXISTS playbook"))
             await conn.run_sync(Base.metadata.create_all)
             # Migration 0006's index isn't applied by `create_all` (that
             # only creates tables/columns, not this hand-written partial
