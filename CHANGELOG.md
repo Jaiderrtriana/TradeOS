@@ -3378,3 +3378,204 @@ never produces one through the HTTP stack to test against.
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Sprint 6.2 — Rolling Statistics + Frontend
+
+Phase 6 of the Implementation Master Plan, second and closing sprint.
+Scope (`TRADEOS_IMPLEMENTATION_MASTER_PLAN.md`): *"the configurable
+moving-window comparison (`TRADEOS_DOMAIN_MODEL.md` §2.3); Statistics
+page, all three tabs. Deliverables: `GET /statistics/rolling`; the full
+Statistics page wired to all three endpoints. Exit Criteria: Milestone
+M6 is achieved."* Milestone M6 (§7): *"Statistics Overview, By-Dimension,
+and Rolling tabs all return figures that are independently verifiable by
+hand-computing them from the same underlying Trades (DI-11)."*
+**Milestone M6 is achieved.**
+
+### No genuine business gap this sprint
+
+The pre-analysis found every business question already resolved by
+literal citation or by Sprint 6.1's own precedent — no `AskUserQuestion`
+was needed:
+
+- **Rolling's metrics** = exactly Overview's `StatisticsSummary` shape
+  (API Spec §6.10: *"Same metrics, computed over the most recent
+  `?window=` Trades, alongside the all-time comparison"*) — explicitly
+  **not** the original Excel's 26-metric Rolling Statistics sheet
+  (Performance/Risk/Evaluation/Psychology, `01_PROJECT_AUDIT.md`), a
+  simplification the frozen API Spec itself already made, not one
+  invented here.
+- **Window enum** = `{10, 20, 30, 50, 100, 200}`, a closed set (API
+  Spec §6.10; Frontend Blueprint §5.6/§8.6, identical) — validated at
+  the router exactly like `dimension`, 422 on any other value, no
+  default (required query param), same precedent `dimension: str =
+  Query(...)` already established in Sprint 6.1.
+- **Window membership** = the `window` most recent Trades by
+  `entered_at` (Database Design: indexed specifically for *"Analytics'
+  time-based queries"*), drawn from every non-deleted Trade — open
+  Trades included, exactly like Overview/By-Dimension already handle
+  "open" internally per metric. Selecting the window is pure data
+  selection, not a new formula: the exact same `aggregate_statistics`
+  Sprint 6.1 built runs unchanged over the windowed subset and over the
+  full set.
+- **"All-time comparison"** = `aggregate_statistics` over the complete,
+  unwindowed fact list — numerically identical to what `GET
+  /statistics/overview` returns for the same user at the same moment,
+  never a different "older-than-the-window" baseline (Domain Model §2.3:
+  *"compared against all-time performance"*).
+- **Response field names `rolling`/`overall`** — not invented: the
+  literal terminology the frozen documents themselves repeat ("Rolling
+  vs. Overall Comparison," Frontend Blueprint §12/§8.6; "Rolling vs.
+  Overall," `01_PROJECT_AUDIT.md`).
+- **Charting library** — `10_TRADEOS_TECHNICAL_STACK.md` §6.8 mandates
+  **Recharts**, resolving what first looked like a real gap (the
+  Frontend Blueprint §12 explicitly declines to choose one: *"Describing
+  communication purpose, not a chosen charting library"*). Confirmed
+  before writing any frontend code, not assumed.
+- **Use Case name** — Backend Blueprint's own compact rows name it
+  `GetRollingStatistics` (alongside `GetStatisticsOverview`/
+  `GetStatisticsByDimension`); implemented as `GetRollingStatisticsUseCase`
+  for full-word consistency with its two siblings.
+
+### Architecture
+
+Domain: `StatisticsFact` gained one field, `entered_at: datetime` (plain
+data, not I/O — same precedent as `Trade`'s own domain dataclass already
+carrying timestamps); two new pure functions in `statistics_aggregation.py`
+— `select_rolling_window(facts, window)` (sort-and-slice, no formula) and
+`aggregate_rolling(facts, window)` (composes the *existing*
+`aggregate_statistics` twice, once per subset — no new math). Trading:
+`TradeRepository.list_all_facts_for_statistics`'s existing SELECT gained
+one already-indexed column (`entered_at`); `TradeStatisticsFact`/
+`TradeStatisticsRecord` pass it through — zero new queries, zero N+1.
+Application: `GetRollingStatisticsUseCase` (new, mirrors `GetStatisticsOverviewUseCase`
+exactly — pure orchestration, no formula, resolves facts via `ListTradeStatisticsFactsUseCase`,
+never a repository directly). Presentation: `GET /statistics/rolling`
+added to the existing router; `RollingStatisticsResponse` added to the
+existing schemas file. Confirmed by `grep`: `statistics` still never
+imports a `trading`/`configuration` repository directly (factories only);
+`trading`/`configuration`/`journal`/`mistakes` still never import
+`statistics` (one-way dependency direction intact). Zero new tables,
+migrations, indexes, cache, or backend dependency.
+
+Frontend: `src/features/statistics/{types,api,queryKeys,format,chartColors}.ts`
++ `components/{MetricBarChart,OverviewTab,ByDimensionTab,RollingTab}.tsx`
++ `pages/StatisticsPage.tsx` (three `Tabs`, per confirmed endpoint —
+Frontend Blueprint §4.2: *"never a tab with no backing endpoint"*).
+`src/components/MetricCard.tsx` — new shared component, first real
+consumer of something the Frontend Blueprint §7 had described but no
+sprint had built yet (Sprint 6.1 was backend-only). One reusable chart
+component, `MetricBarChart`, instantiated once per metric named in
+§12's "Displayed Metrics" columns (3× for By Dimension: Win Rate,
+Expectancy, Profit Factor; 4× for Rolling: Win Rate, Expectancy, Profit
+Factor, Average R) rather than one multi-metric chart — a 0-1 ratio, an
+unbounded R-multiple, and a ratio that can exceed 1 do not belong on one
+shared axis (the "never a dual-axis chart" rule, applied to bars).
+Identity (Rolling vs. Overall; by-dimension group) is always carried by
+the x-axis category label, never by color alone. Each tab also renders a
+`DataTable` with the complete field set, not just the charted subset.
+
+### Chart color decision (documented, not silently chosen)
+
+The project's Design System (`src/design-system/tokens.css`) defines
+only `accent` and `danger` — no second categorical hue exists for a
+genuine two-series comparison (Rolling vs. Overall). Rather than add a
+new Design System token (the same restraint `Badge.tsx` already
+documented for itself) or eyeball a second color, ran the dataviz
+skill's `validate_palette.js` against the app's real accent (`#6366F1`)
+paired with a candidate orange (`#d95926`) on the app's actual dark
+surface (`#141418`): all checks passed (CVD ΔE 30.3, normal-vision ΔE
+33.3, both well clear of the 8/15 floors). `ROLLING_COLOR` reuses the
+existing `--color-accent` CSS variable; `OVERALL_COLOR` is that one
+validated hex, documented in `chartColors.ts` — no other new color
+introduced anywhere.
+
+### A build-size consequence, addressed directly
+
+Adding Recharts (first real consumer in this project) pushed the single
+production bundle to 936 kB, past Vite's 500 kB warning — the app had
+never lazy-loaded any route before this sprint (`grep` confirmed zero
+`React.lazy` usage anywhere in `router.tsx`), despite Frontend Blueprint
+§2.4/§16 already calling for per-feature code splitting. Rather than
+silently accept the regression or retrofit every existing route (out of
+this sprint's scope), lazy-loaded only the `/statistics` route
+(`React.lazy` + `Suspense`, Vite's own recommended fix) — Statistics now
+ships as its own 367 kB chunk, and the shared main bundle actually
+*shrank* to 568 kB relative to before this sprint's change (that
+residual is every other still-unsplit route, pre-existing, out of
+scope). Noted as pre-existing technical debt, not fixed further here.
+
+### Documentary defects noted, not corrected
+
+Backend Blueprint's compact traceability row names the new Use Case
+`GetRollingStatistics` in one place while its own service-table row
+group-names all three as `GetStatisticsOverview/ByDimension/Rolling` —
+a minor prefix inconsistency, not a contradiction; the fuller name
+(`GetRollingStatisticsUseCase`) was kept for consistency with its two
+already-shipped siblings. Frontend Blueprint §7 (Component Blueprint)
+never lists "Chart" among its own enumerated reusable components, even
+though §8 and §12 both reference it repeatedly ("Chart — By-Dimension
+Comparison," "Chart — Rolling vs. Overall Comparison") — an omission in
+the enumeration, not a deliberate exclusion.
+
+### Explicit exclusions (approved scope)
+
+Row-click drill-down from a by-dimension group into a filtered Trades
+List or Playbook Setup (Frontend Blueprint §12/§18) — named in the
+Blueprint but not itemized in this sprint's approved deliverable list;
+deferred to whichever future sprint actually builds Playbook/Trades-List
+filter wiring. Dimension+window combination — the Rolling tab has no
+dimension selector anywhere in the Blueprint's own wireframe. Export,
+Equity Curve — already-registered Open Questions (FE-6, FE-7),
+unaffected by this sprint.
+
+### Added
+- Backend: `app/modules/statistics/application/get_rolling_statistics.py`
+  (new); `ROLLING_WINDOWS`, `RollingStatistics`, `select_rolling_window`,
+  `aggregate_rolling` (`statistics/domain/statistics_aggregation.py`);
+  `RollingStatisticsResponse` (`statistics/presentation/schemas.py`);
+  `GET /statistics/rolling` (`statistics/presentation/router.py`);
+  `entered_at` added to `StatisticsFact`, `TradeStatisticsFact`,
+  `TradeStatisticsRecord`. Tests: 10 new unit tests
+  (`test_statistics_aggregation.py`, now 26) covering window selection at
+  sizes the real endpoint can never accept (2, 3) plus the boundary
+  cases; 5 new integration tests (`test_statistics_flow.py`, now 23)
+  including the literal Exit Criteria test — 2 older losing Trades
+  followed by 10 newer winning Trades, `rolling` (window=10) hand-verified
+  to reflect only the 10 winners, `overall` hand-verified to reflect all
+  12.
+- Frontend: `src/components/MetricCard.tsx` (new shared component);
+  `src/features/statistics/` — `types.ts`, `api.ts`, `queryKeys.ts`,
+  `format.ts` (+ `format.test.ts`, 7 unit tests), `chartColors.ts`,
+  `components/{MetricBarChart,OverviewTab,ByDimensionTab,RollingTab}.tsx`,
+  `pages/StatisticsPage.tsx` (rewritten from its Sprint-6.1-era
+  placeholder); `router.tsx` — `/statistics` now lazy-loaded;
+  `e2e/statistics.spec.ts` (2 tests). `recharts` added as a new
+  dependency — mandatory per `TRADEOS_TECHNICAL_STACK.md` §6.8, its
+  first real consumer in this project.
+
+### Verification performed
+- Backend: `pytest` — **309 passed** (10 new; 299 carried over), zero
+  regressions; `ruff format --check` / `ruff check` / `mypy app` —
+  clean (180 source files). Audit: zero TODO/FIXME; `grep` confirms
+  `statistics` never imports a `trading`/`configuration` repository
+  directly and is never imported back by any other module; zero changes
+  to `pyproject.toml`/`poetry.lock`; zero new migrations, tables,
+  indexes, or cache.
+- Frontend: `tsc -b --noEmit` — clean; `eslint .` — clean (feature
+  boundaries respected, no new rule violations); `vitest run` — **73
+  passed** (7 new; 66 carried over); `vite build` — succeeds,
+  `/statistics` isolated into its own 367 kB lazy chunk. Audit: zero
+  `console.log`/TODO/FIXME in any new file.
+- E2E: real stack (Docker Postgres 16 + `uvicorn` + Chromium/Playwright,
+  never mocked) — `e2e/statistics.spec.ts` (2/2 passed): the three tabs
+  each read correctly off one registered, closed Trade, including the
+  "Unassigned" by-dimension bucket and the Rolling/Overall table reading
+  identically when only one Trade exists. Full suite: **20/21 passed** on
+  the first parallel run; the one failure
+  (`configuration-and-catalogs.spec.ts`, unrelated to this sprint) passed
+  cleanly on an isolated re-run — a pre-existing parallel-worker flake in
+  registration timing, not a regression introduced here. Dev stack
+  (Postgres container, `uvicorn`) torn down afterward.
+
+### Confirmation
+No `git push` was run at any point.

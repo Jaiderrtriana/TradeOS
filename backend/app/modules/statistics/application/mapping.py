@@ -17,6 +17,7 @@ def to_statistics_fact(record: TradeStatisticsRecord) -> StatisticsFact:
         setup_id=record.setup_id,
         session_id=record.session_id,
         direction=record.direction,
+        entered_at=record.entered_at,
         confidence_score=record.confidence_score,
         quality_score=record.quality_score,
         execution_score=record.execution_score,

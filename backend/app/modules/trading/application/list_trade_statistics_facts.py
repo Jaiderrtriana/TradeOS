@@ -22,10 +22,16 @@ snapshots` is a `trading`-schema table, not a separate module read).
 Two queries total, never N+1: one for every Trade's raw facts
 (`TradeRepository.list_all_facts_for_statistics`), one batched read for
 every one of those Trades' current Evaluation Snapshot.
+
+`entered_at` (Sprint 6.2) passes through unchanged -- Rolling Statistics
+needs it to select "the most recent N Trades" (`TRADEOS_DOMAIN_MODEL.md`
+§2.3); Overview/By-Dimension simply ignore the field, same as they
+already ignore `id`.
 """
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,6 +52,7 @@ class TradeStatisticsRecord:
     strategy_id: uuid.UUID | None
     setup_id: uuid.UUID | None
     session_id: uuid.UUID | None
+    entered_at: datetime
     confidence_score: float | None
     quality_score: float | None
     execution_score: float | None
@@ -83,6 +90,7 @@ class ListTradeStatisticsFactsUseCase:
                     strategy_id=fact.strategy_id,
                     setup_id=fact.setup_id,
                     session_id=fact.session_id,
+                    entered_at=fact.entered_at,
                     confidence_score=snapshot.confidence_score if snapshot else None,
                     quality_score=snapshot.quality_score if snapshot else None,
                     execution_score=snapshot.execution_score if snapshot else None,

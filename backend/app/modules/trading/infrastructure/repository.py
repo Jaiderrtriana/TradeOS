@@ -211,7 +211,13 @@ class TradeRepository:
         §6.9) -- `r_multiple` is computed later, by the caller, via
         `compute_r_multiple` (never duplicated here); Evaluation scores
         are a separate batched read (`EvaluationSnapshotRepository.
-        list_current_by_trade_ids`), not this query's concern."""
+        list_current_by_trade_ids`), not this query's concern.
+
+        `entered_at` (Sprint 6.2) is included so Rolling Statistics can
+        select "the most recent N Trades" (`TRADEOS_DOMAIN_MODEL.md`
+        §2.3) without a second query -- the same already-indexed column
+        `list_all` above orders by (`TRADEOS_DATABASE_DESIGN.md` §6.9's
+        "Analytics' time-based queries" index)."""
         result = await self._session.execute(
             select(
                 TradeModel.id,
@@ -224,6 +230,7 @@ class TradeRepository:
                 TradeModel.strategy_id,
                 TradeModel.setup_id,
                 TradeModel.session_id,
+                TradeModel.entered_at,
             ).where(TradeModel.user_id == user_id, TradeModel.deleted_at.is_(None))
         )
         return [
@@ -238,6 +245,7 @@ class TradeRepository:
                 strategy_id=row.strategy_id,
                 setup_id=row.setup_id,
                 session_id=row.session_id,
+                entered_at=row.entered_at,
             )
             for row in result.all()
         ]
@@ -273,6 +281,7 @@ class TradeStatisticsFact:
     strategy_id: uuid.UUID | None
     setup_id: uuid.UUID | None
     session_id: uuid.UUID | None
+    entered_at: datetime
 
 
 class ChecklistSnapshotRepository:

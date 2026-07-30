@@ -47,13 +47,45 @@ API Specification, and Product Bible before implementation began):
   `strategy_id`/`setup_id`/`session_id` are grouped into an explicit
   `"unassigned"` bucket, never silently dropped. `direction` is never
   `NULL` on a Trade, so it never produces this bucket.
+
+Sprint 6.2 adds Rolling Statistics -- `TRADEOS_DOMAIN_MODEL.md` §2.3:
+"Performance metrics computed over a configurable, moving window of the
+most recent N Trades, compared against all-time performance."
+`TRADEOS_API_SPECIFICATION.md` §6.10: "Same metrics, computed over the
+most recent `?window=10|20|30|50|100|200` Trades, alongside the all-time
+comparison." Resolved (Sprint 6.2 pre-analysis, no genuine gap -- every
+point below follows from citation or from this module's own established
+precedent):
+
+- **Window membership** = the `window` most recent Trades by
+  `entered_at` (ties broken by `id`, descending, same determinism
+  precedent as `TradeListCursor`'s `(entered_at, id)` keyset), drawn from
+  *every* non-deleted Trade -- open Trades included. Selecting the window
+  is pure data selection, not a new formula: `aggregate_statistics`
+  already knows how to exclude "open" from Win Rate/Expectancy on its
+  own, so the window is simply a shorter list of `StatisticsFact` handed
+  to the exact same function Overview/By-Dimension already use.
+- **"All-time comparison"** = `aggregate_statistics` over the complete,
+  unwindowed fact list -- i.e., numerically identical to what
+  `GET /statistics/overview` returns for the same user at the same
+  moment. Never a different, "older-than-the-window" baseline: the
+  Domain Model's own framing ("compared against all-time performance")
+  and the Frontend Blueprint's chart purpose ("Am I trending better or
+  worse than my own history") both describe the *whole* history as the
+  comparison point, window included.
+- **Fewer Trades than the requested window**: not an error -- the window
+  is simply every Trade that exists (identical in that case to
+  "all-time"), same graceful-degradation precedent as a by-dimension
+  group of size one.
 """
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 
 UNASSIGNED = "unassigned"
 DIMENSIONS = ("strategy", "setup", "session", "direction")
+ROLLING_WINDOWS = (10, 20, 30, 50, 100, 200)
 
 
 @dataclass(frozen=True)
@@ -73,6 +105,7 @@ class StatisticsFact:
     setup_id: uuid.UUID | None
     session_id: uuid.UUID | None
     direction: str
+    entered_at: datetime
     confidence_score: float | None
     quality_score: float | None
     execution_score: float | None
@@ -184,3 +217,36 @@ def aggregate_by_dimension(
         DimensionStatistics(dimension_value=key, summary=aggregate_statistics(group_facts))
         for key, group_facts in groups.items()
     ]
+
+
+@dataclass(frozen=True)
+class RollingStatistics:
+    """`GET /statistics/rolling`'s domain result -- `rolling` and
+    `overall` use the identical `StatisticsSummary` shape `aggregate_
+    statistics` already produces everywhere else, so a caller comparing
+    the two is comparing like with like, field for field."""
+
+    window: int
+    rolling: StatisticsSummary
+    overall: StatisticsSummary
+
+
+def select_rolling_window(facts: list[StatisticsFact], window: int) -> list[StatisticsFact]:
+    """The `window` most recent Trades by `entered_at`. Fewer facts than
+    `window` simply returns all of them -- not an error. Python's `sorted`
+    is stable, so an exact `entered_at` tie at the window boundary keeps
+    the facts' incoming relative order rather than raising or guessing --
+    an acceptable edge case, since two Trades sharing the same
+    microsecond-precision timestamp is not a real scenario this module
+    needs to guard against."""
+    ordered = sorted(facts, key=lambda fact: fact.entered_at, reverse=True)
+    return ordered[:window]
+
+
+def aggregate_rolling(facts: list[StatisticsFact], window: int) -> RollingStatistics:
+    windowed = select_rolling_window(facts, window)
+    return RollingStatistics(
+        window=window,
+        rolling=aggregate_statistics(windowed),
+        overall=aggregate_statistics(facts),
+    )

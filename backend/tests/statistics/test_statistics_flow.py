@@ -1,15 +1,19 @@
 """
-Integration tests: `GET /statistics/overview`, `GET /statistics/by-dimension`
-(`TRADEOS_API_SPECIFICATION.md` §6.10, Sprint 6.1) — run through the real
-FastAPI app, same client/auth fixture pattern as
-tests/mistakes/test_mistake_ranking_flow.py.
+Integration tests: `GET /statistics/overview`, `GET /statistics/by-dimension`,
+`GET /statistics/rolling` (`TRADEOS_API_SPECIFICATION.md` §6.10, Sprints
+6.1-6.2) — run through the real FastAPI app, same client/auth fixture
+pattern as tests/mistakes/test_mistake_ranking_flow.py.
 
 Formulas under test (approved, Sprint 6.1 pre-analysis — no document
 defines these precisely): Win Rate = count(TP) / count(closed);
 Expectancy = Average R = mean(r_multiple) over closed trades;
 Profit Factor = gross_profit_r / gross_loss_r (None if no losses);
 Total P&L = sum(realized_pnl) over all non-deleted trades; by-dimension
-buckets a null strategy/setup/session as "unassigned".
+buckets a null strategy/setup/session as "unassigned". Rolling (approved,
+Sprint 6.2 pre-analysis): the window is drawn from the most recent N
+Trades by `entered_at` across the *entire* non-deleted set, then
+`aggregate_statistics` runs unchanged over that subset (`rolling`) and
+over the full set (`overall`).
 """
 
 import uuid
@@ -375,3 +379,97 @@ async def test_exit_criteria_hand_computed_win_rate_and_expectancy_match_exactly
     assert body["win_rate"] == hand_win_rate
     assert body["expectancy_r"] == hand_expectancy
     assert body["average_r"] == hand_expectancy
+
+
+# ---------------------------------------------------------------------
+# Rolling (Sprint 6.2)
+# ---------------------------------------------------------------------
+
+
+async def test_rolling_rejects_an_unsupported_window(client):
+    headers = await _auth_headers(client)
+    response = await client.get(
+        "/api/v1/statistics/rolling", params={"window": 15}, headers=headers
+    )
+    assert response.status_code == 422
+
+
+async def test_rolling_requires_authentication(client):
+    response = await client.get("/api/v1/statistics/rolling", params={"window": 10})
+    assert response.status_code == 401
+
+
+async def test_rolling_is_scoped_to_the_requesting_user(client):
+    headers_a = await _auth_headers(client)
+    headers_b = await _auth_headers(client)
+    await _publish_empty_configuration_version(client, headers_a)
+
+    trade = await _register_trade(client, headers_a)
+    await _close_trade(client, headers_a, trade, result="tp", exit_price=110.0)
+
+    response = await client.get(
+        "/api/v1/statistics/rolling", params={"window": 10}, headers=headers_b
+    )
+    body = response.json()
+    assert body["window"] == 10
+    assert body["rolling"]["win_rate"] is None
+    assert body["overall"]["win_rate"] is None
+
+
+async def test_rolling_with_fewer_trades_than_window_equals_overall(client):
+    headers = await _auth_headers(client)
+    await _publish_empty_configuration_version(client, headers)
+
+    tp_trade = await _register_trade(client, headers)
+    await _close_trade(client, headers, tp_trade, result="tp", exit_price=110.0)
+    sl_trade = await _register_trade(client, headers)
+    await _close_trade(client, headers, sl_trade, result="sl", exit_price=95.0)
+
+    response = await client.get(
+        "/api/v1/statistics/rolling", params={"window": 10}, headers=headers
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["window"] == 10
+    assert body["rolling"] == body["overall"]
+
+
+async def test_exit_criteria_rolling_window_only_reflects_the_most_recent_n_trades(client):
+    """Master Plan Milestone M6: "Rolling tabs... return figures that are
+    independently verifiable by hand-computing them from the same
+    underlying Trades" (DI-11). Registers 2 older SL trades followed by
+    10 newer TP trades (`window=10`, the smallest value the endpoint
+    accepts) -- `rolling` must reflect only the 10 TP trades, `overall`
+    must reflect all 12, hand-computed independently of the
+    implementation."""
+    headers = await _auth_headers(client)
+    await _publish_empty_configuration_version(client, headers)
+
+    for _ in range(2):
+        trade_id = await _register_trade(client, headers)
+        await _close_trade(client, headers, trade_id, result="sl", exit_price=95.0)  # r = -1.0
+
+    for _ in range(10):
+        trade_id = await _register_trade(client, headers)
+        await _close_trade(client, headers, trade_id, result="tp", exit_price=110.0)  # r = +2.0
+
+    response = await client.get(
+        "/api/v1/statistics/rolling", params={"window": 10}, headers=headers
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["window"] == 10
+    # Rolling: the 10 most recently registered trades are all the TP
+    # trades registered last -- hand-computed win rate 1.0, expectancy 2.0.
+    assert body["rolling"]["win_rate"] == 1.0
+    assert body["rolling"]["expectancy_r"] == 2.0
+    assert body["rolling"]["average_r"] == 2.0
+
+    # Overall: all 12 trades -- hand-computed win rate 10/12, expectancy
+    # mean([-1.0, -1.0] + [2.0] * 10).
+    hand_overall_win_rate = 10 / 12
+    hand_overall_expectancy = ((-1.0 * 2) + (2.0 * 10)) / 12
+    assert body["overall"]["win_rate"] == hand_overall_win_rate
+    assert body["overall"]["expectancy_r"] == hand_overall_expectancy
+    assert body["overall"]["average_r"] == hand_overall_expectancy

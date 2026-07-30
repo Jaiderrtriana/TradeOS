@@ -4,17 +4,26 @@ pure functions, no DB, no HTTP, same precedent as
 `tests/evaluation/test_confidence_engine.py`. Covers the edge cases the
 real system never actually produces today (a genuinely `None` engine
 score) alongside the formulas already exercised end-to-end in
-`test_statistics_flow.py`.
+`test_statistics_flow.py`. Rolling Statistics (Sprint 6.2) is exercised
+here at the small window sizes (e.g. 2) the real HTTP endpoint can never
+accept (`ROLLING_WINDOWS` restricts it to 10/20/30/50/100/200) --
+`select_rolling_window`/`aggregate_rolling` themselves place no such
+restriction, since window validation is the presentation layer's job.
 """
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from app.modules.statistics.domain.statistics_aggregation import (
     UNASSIGNED,
     StatisticsFact,
     aggregate_by_dimension,
+    aggregate_rolling,
     aggregate_statistics,
+    select_rolling_window,
 )
+
+_BASE_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 def _fact(**overrides) -> StatisticsFact:
@@ -26,6 +35,7 @@ def _fact(**overrides) -> StatisticsFact:
         setup_id=None,
         session_id=None,
         direction="long",
+        entered_at=_BASE_TIME,
         confidence_score=None,
         quality_score=None,
         execution_score=None,
@@ -143,3 +153,58 @@ def test_aggregate_by_dimension_each_group_has_its_own_summary():
     assert groups[str(strategy_a)].average_r == 3.0
     assert groups[str(strategy_b)].win_rate == 0.0
     assert groups[str(strategy_b)].average_r == -1.0
+
+
+# ---------------------------------------------------------------------
+# Rolling Statistics (Sprint 6.2)
+# ---------------------------------------------------------------------
+
+
+def _at(days_ago: int, **overrides):
+    return _fact(entered_at=_BASE_TIME - timedelta(days=days_ago), **overrides)
+
+
+def test_select_rolling_window_keeps_the_most_recent_n_by_entered_at():
+    oldest = _at(days_ago=5)
+    middle = _at(days_ago=3)
+    newest = _at(days_ago=0)
+    window = select_rolling_window([oldest, newest, middle], window=2)
+    assert window == [newest, middle]
+
+
+def test_select_rolling_window_with_fewer_facts_than_window_returns_all_of_them():
+    facts = [_at(days_ago=2), _at(days_ago=1)]
+    window = select_rolling_window(facts, window=10)
+    assert len(window) == 2
+
+
+def test_select_rolling_window_with_no_facts_returns_empty():
+    assert select_rolling_window([], window=10) == []
+
+
+def test_aggregate_rolling_rolling_only_reflects_the_windowed_subset():
+    # 2 older SL trades, then 3 newer TP trades -- window=3 must only see
+    # the 3 newer TP trades; `overall` must see all 5.
+    facts = [
+        _at(days_ago=10, result="sl", r_multiple=-1.0),
+        _at(days_ago=9, result="sl", r_multiple=-1.0),
+        _at(days_ago=2, result="tp", r_multiple=2.0),
+        _at(days_ago=1, result="tp", r_multiple=2.0),
+        _at(days_ago=0, result="tp", r_multiple=2.0),
+    ]
+    result = aggregate_rolling(facts, window=3)
+    assert result.window == 3
+    assert result.rolling.win_rate == 1.0
+    assert result.rolling.average_r == 2.0
+    assert result.overall.win_rate == 3 / 5
+    hand_overall_average_r = (-1.0 + -1.0 + 2.0 + 2.0 + 2.0) / 5
+    assert result.overall.average_r == hand_overall_average_r
+
+
+def test_aggregate_rolling_with_fewer_facts_than_window_rolling_equals_overall():
+    facts = [
+        _at(days_ago=1, result="tp", r_multiple=1.5),
+        _at(days_ago=0, result="sl", r_multiple=-1.0),
+    ]
+    result = aggregate_rolling(facts, window=200)
+    assert result.rolling == result.overall

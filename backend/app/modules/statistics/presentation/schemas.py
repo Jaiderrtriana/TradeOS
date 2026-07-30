@@ -29,3 +29,15 @@ class DimensionStatisticsResponse(StatisticsSummaryResponse):
 
     dimension_value: str
     label: str
+
+
+class RollingStatisticsResponse(BaseModel):
+    """`GET /statistics/rolling`: "Same metrics, computed over the most
+    recent N Trades, alongside the all-time comparison" (§6.10). Field
+    names `rolling`/`overall` are the literal terminology the frozen
+    documents themselves use ("Rolling vs. Overall Comparison",
+    `TRADEOS_FRONTEND_BLUEPRINT.md` §12, §8.6), not invented here."""
+
+    window: int
+    rolling: StatisticsSummaryResponse
+    overall: StatisticsSummaryResponse
