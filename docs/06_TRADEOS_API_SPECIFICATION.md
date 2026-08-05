@@ -1,8 +1,8 @@
 # TRADEOS_API_SPECIFICATION.md
 
 **Document Status:** CANONICAL AND FROZEN — the official API specification of TradeOS.
-**Version:** 1.1
-**Last Updated:** 2026-07-24
+**Version:** 1.2
+**Last Updated:** 2026-07-30
 **Depends On:** all five prior frozen documents (`PROJECT_AUDIT.md`, `TRADEOS_PRODUCT_BIBLE.md`, `TRADEOS_DOMAIN_MODEL.md`, `TRADEOS_SYSTEM_ARCHITECTURE.md`, `TRADEOS_DATABASE_DESIGN.md`). This document invents no business rule, entity, or table — it defines the contract through which the business capabilities already modeled become callable.
 **Is Not:** implementation code, controllers, DTOs, services, or an OpenAPI/Swagger document. It contains enough structure to generate one later (Section 16) without being one.
 
@@ -178,25 +178,28 @@ Grouped by Bounded Context (`TRADEOS_DOMAIN_MODEL.md` Section 4), matching `TRAD
 | `/api/v1/preferences` | GET | Return the current user's preferences (`TRADEOS_DOMAIN_MODEL.md` Section 8.12) | Yes | Created automatically with defaults at registration — this endpoint never 404s for an authenticated user |
 | `/api/v1/preferences` | PATCH | Update theme/language/notification settings | Yes | No business validation beyond allowed enum values for `theme`/`language` |
 
-### 6.4 Trades Module
+### 6.4 Trades Module *(v2.0 fields — see `TRADEOS_DOMAIN_MODEL.md` KDD-07)*
 
 #### `POST /api/v1/trades`
-- **Purpose:** register a new Trade — the single most important write in the system, since it triggers synchronous Evaluation (`TRADEOS_SYSTEM_ARCHITECTURE.md` Section 4; Section 11.1 of this document traces the full flow).
+- **Purpose:** register a new Trade — the single most important write in the system. Triggers synchronous Evaluation (`TRADEOS_SYSTEM_ARCHITECTURE.md` Section 4; Section 11.1 of this document traces the full flow) **only when `status != planned`** — a `Planned` Trade has no Checklist/Evaluation yet by definition (Domain Invariant DI-13).
 - **Auth Required:** Yes. **Permissions:** none beyond ownership (Section 4.6) — the created Trade is owned by the caller.
 - **Headers:** optional `Idempotency-Key` (Section 3.6).
 - **Request Body:**
-  - Core facts (always required): `market`, `direction` (`long`|`short`), `entry_price`, `stop_loss`.
-  - Optional at registration (may be supplied now or via `PATCH`/`close` later): `exit_price`, `size`, `leverage`, `result`, `strategy_id`, `setup_id`, `session_id`, `entry_trigger_id`, `notes`, `mfe_price`, `mae_price`.
-  - `checklist_answers` (object, optional): the raw `{criterion_source_field: value}` map (`TRADEOS_DATABASE_DESIGN.md` Section 6.10) feeding Confidence/Market Context/Bias. Omitted fields simply mean those criteria don't contribute to this Trade's score (Domain Invariant INV-WEIGHT-01 handles a missing input the same way it handles a deactivated criterion).
+  - Core facts (always required): `market`, `direction` (`long`|`short`), `status` (`planned`|`open`|`closed`, **new in v2.0** — no default, always explicit).
+  - `scoring_profile` (required unless `status = planned` — a `Planned` Trade has no Evaluation to configure yet; required exactly as before, Sprint 4.1's resolution, once `status != planned`).
+  - Required when `status = open` or `status = closed`: `entry_price`, `stop_loss`, `entered_at` (**relaxed from always-required in v2.0** — absent entirely while `status = planned`).
+  - Required additionally when `status = closed`: `exit_price`, `result` (`tp`|`sl`|`be`), `closed_at`, `realized_pnl` (**new in v2.0**, INV-TRADE-02 — a trader-supplied fact, never derived, Domain Model Section 8.1's Owned Information).
+  - Optional at any status: `take_profit` (**new in v2.0**), `margin_used` (**new in v2.0** — distinct from `size`), `size`, `leverage`, `strategy_id`, `setup_id`, `session_id`, `entry_trigger_id`, `notes`, `mfe_price`, `mae_price`.
+  - `checklist_answers` (object, optional, ignored while `status = planned`): the raw `{criterion_source_field: value}` map (`TRADEOS_DATABASE_DESIGN.md` Section 6.10) feeding Confidence/Market Context/Bias. Omitted fields simply mean those criteria don't contribute to this Trade's score (Domain Invariant INV-WEIGHT-01 handles a missing input the same way it handles a deactivated criterion).
   - `mistake_ids` (array of catalog entry IDs, optional): tag Mistakes at creation time, equivalent to calling Section 6.4's mistake-tagging endpoint immediately after.
-- **Response Body (201):** the full Trade representation, including its computed properties (`r_multiple`, `mfe_r`, `mae_r`, `captured_pct`, `potential_left_r` — computed at response time, never stored, `TRADEOS_DATABASE_DESIGN.md` Section 6.9) and its nested current `evaluation` object (scores + grades for all active engines, Section 6.5).
-- **Status Codes:** `201` Created; `422` Validation Error (Domain Invariant INV-TRADE-01, e.g., stop on the wrong side of entry); `401` Unauthorized.
-- **Business Validation Rules:** INV-TRADE-01 (stop placement relative to direction); if `result` and `exit_price` are both supplied, INV-TRADE-02 requires them together (supplying one without the other is a `422`, not a silent partial acceptance).
-- **Notes:** this endpoint performs the entire flow described in Section 11.1 within one request/response cycle and one database transaction — the client receives the final, scored Trade in the same response, never a "submitted, check back later" acknowledgment (this is not a Long Running Operation, Section 10).
+- **Response Body (201):** the full Trade representation, including its computed properties (`r_multiple`, `mfe_r`, `mae_r`, `captured_pct`, `potential_left_r`, `roi_percent`, `pnl_percent` — **the last two new in v2.0**, computed at response time from `realized_pnl`/`margin_used`/`leverage`, never stored, `TRADEOS_DATABASE_DESIGN.md` Section 6.9) and its nested current `evaluation` object (`null` while `status = planned`; scores + grades for all active engines otherwise, Section 6.5).
+- **Status Codes:** `201` Created; `422` Validation Error (Domain Invariant INV-TRADE-01, e.g., stop on the wrong side of entry, or a field required for the given `status` is missing); `401` Unauthorized.
+- **Business Validation Rules:** INV-TRADE-01 (stop placement relative to direction, checked only once both prices exist); INV-TRADE-02 (redefined, v2.0 — see Domain Model Section 15) enforces exactly which fields exist per `status`.
+- **Notes:** this endpoint performs the entire flow described in Section 11.1 within one request/response cycle and one database transaction — the client receives the final, scored Trade in the same response, never a "submitted, check back later" acknowledgment (this is not a Long Running Operation, Section 10). This is unchanged for `status != planned`; a `Planned` Trade simply skips the Evaluation portion of that flow.
 
 #### `GET /api/v1/trades`
 - **Purpose:** list the caller's Trades.
-- **Query Parameters:** filtering, sorting, pagination per Section 7 (e.g., `?direction=long&result=tp&entered_after=2026-01-01&sort=-entered_at&limit=50&cursor=...`).
+- **Query Parameters:** filtering, sorting, pagination per Section 7 (e.g., `?direction=long&status=closed&result=tp&entered_after=2026-01-01&sort=-entered_at&limit=50&cursor=...`). `?status=planned|open|closed` is a filter **new in v2.0**; `result` no longer accepts `open` as a value (retired, see `TRADEOS_DOMAIN_MODEL.md` KDD-07) — filtering for not-yet-closed Trades is now `?status=open` (or `?status=planned`), not `?result=open`.
 - **Response Body (200):** paginated envelope (Section 7.4) of Trade summaries (a lighter shape than the full detail view — omits `evaluation_snapshot_breakdowns` and `checklist_answers`, which are fetched only via the single-resource endpoint, to keep list responses cheap).
 
 #### `GET /api/v1/trades/{id}`
@@ -209,11 +212,18 @@ Grouped by Bounded Context (`TRADEOS_DOMAIN_MODEL.md` Section 4), matching `TRAD
 - **Side Effect (documented, not hidden):** raises a `TradeAmended` Domain Event (Section 11) — the amendment is never silent (Domain Invariant DI-01).
 - **Notes:** does **not** re-run Evaluation. If the amendment should affect scoring, the caller must separately call `POST /trades/{id}/reevaluate` (Section 6.4) — kept as two explicit steps because Domain Model Section 8.2 requires re-evaluation to always be a deliberate action, never an automatic side effect of an unrelated edit.
 
+#### `POST /api/v1/trades/{id}/open` *(new in v2.0)*
+- **Purpose:** transition a Trade from `Planned` to `Open` — the first moment it becomes a real, executed position. Triggers Evaluation for the first time (same synchronous flow `POST /trades` already performs when created directly as `Open`, Section 11.1).
+- **Request Body:** `entry_price` (required), `entered_at` (required), `scoring_profile` (required — Evaluation runs here), `stop_loss`/`take_profit`/`checklist_answers` (optional, same shape as `POST /trades`).
+- **Response Body (200):** the updated Trade, `status = open`, with its nested current `evaluation` object now present.
+- **Status Codes:** `200`; `409` Conflict (Trade is not `Planned` — mirrors `close`'s own "not idempotent" posture, Domain Invariant DI-13/INV-TRADE-04); `422` (missing required field, or INV-TRADE-01 violated).
+- **Event:** raises `TradeOpened` (Section 11).
+
 #### `POST /api/v1/trades/{id}/close`
-- **Purpose:** transition a Trade from `Open` to a terminal `Result`.
-- **Request Body:** `result` (`tp`|`sl`|`be`, required), `exit_price` (required — INV-TRADE-02), `mfe_price`/`mae_price` (optional, but this is the natural moment to supply them since the trade's full excursion is now known).
-- **Response Body (200):** the updated Trade, with its now-computable `r_multiple`/`mfe_r`/`mae_r`/`captured_pct`/`potential_left_r`.
-- **Status Codes:** `200`; `409` Conflict (already closed — closing is not idempotent in the sense of "closing twice with different prices silently wins," it is rejected outright); `422` (missing `exit_price`).
+- **Purpose:** transition a Trade from `Open` to `Closed`, with a terminal `Result`.
+- **Request Body:** `result` (`tp`|`sl`|`be`, required), `exit_price` (required — INV-TRADE-02), `realized_pnl` (required, **new in v2.0** — a trader-supplied fact, e.g. from the exchange, never derived from price/size alone since fees/funding are not captured), `closed_at` (required), `mfe_price`/`mae_price` (optional, but this is the natural moment to supply them since the trade's full excursion is now known).
+- **Response Body (200):** the updated Trade, with its now-computable `r_multiple`/`mfe_r`/`mae_r`/`captured_pct`/`potential_left_r`/`roi_percent`/`pnl_percent`.
+- **Status Codes:** `200`; `409` Conflict (not `Open` — a `Planned` Trade must call `open` first, INV-TRADE-04; an already-`Closed` Trade rejects outright, closing is not idempotent in the sense of "closing twice with different prices silently wins"); `422` (missing a required field).
 - **Event:** raises `TradeClosed` (Section 11).
 
 #### `POST /api/v1/trades/{id}/reevaluate`
@@ -464,6 +474,27 @@ Event dispatcher fires, in order: TradeRegistered → TradeEvaluated
 
 No consumer currently subscribes to `TradeRegistered`/`TradeEvaluated` synchronously within this flow — they are logged for future consumers (Future Reserved Domains, `TRADEOS_DOMAIN_MODEL.md` Section 17) and for `platform.event_log`'s audit purpose (Section 8's `trace_id` correlates a request to its logged events).
 
+### 11.1.1 Illustrative Flow: `POST /trades/{id}/open` *(new in v2.0)*
+```
+POST /trades/{id}/open
+  │
+  ▼
+Trading module validates the Trade is Planned (INV-TRADE-04), transitions Planned → Open
+  │
+  ▼
+Trading module calls Evaluation module synchronously (first time for this Trade —
+  identical to the tail of POST /trades' own flow above)
+  │
+  ▼
+Trading module persists Trade + ChecklistSnapshot + EvaluationSnapshot (one transaction)
+  │
+  ▼
+Event dispatcher fires, in order: TradeOpened → TradeEvaluated
+  │
+  ▼
+200 response returned to caller, containing the full Trade + its Evaluation
+```
+
 ### 11.2 Illustrative Flow: `POST /trades/{id}/close`
 ```
 POST /trades/{id}/close
@@ -616,6 +647,7 @@ Every endpoint in Section 6 appears in, or is a variant of, a row above. Any fut
 |---|---|---|
 | 1.0 | 2026-07-24 | Initial API Specification. Derived from all five frozen foundational documents. Defined API philosophy, REST architecture, authentication/authorization model, 12 API modules, full endpoint specifications, a unified filtering/sorting/pagination standard, a unified error model, validation rules, an explicit "no Long Running Operations in v1" position, event integration flows (correcting the source prompt's illustrative example where it didn't match confirmed behavior), versioning policy, security and performance considerations, OpenAPI readiness, reserved future extensions, six known gaps, and a full traceability matrix. |
 | 1.1 | 2026-07-24 | Approved and frozen as canonical. Added API Design Principles (Section 2, a concrete, tactical checklist distinct from Section 1's higher-level Philosophy) and Endpoint Lifecycle (Section 13, formalizing Experimental/Stable/Deprecated/Removed states and confirming every currently-specified endpoint starts Experimental). Renumbered all sections accordingly. |
+| 1.2 | 2026-07-30 | Downstream of `TRADEOS_DOMAIN_MODEL.md` v2.0 (KDD-07) and `TRADEOS_DATABASE_DESIGN.md` v1.2. Section 6.4: `POST /trades` gains required `status` (`planned`\|`open`\|`closed`), with `entry_price`/`stop_loss`/`entered_at`/`scoring_profile` now conditionally required (absent while `status=planned`); `take_profit`/`margin_used` added as optional fields; `realized_pnl`/`closed_at` now required inputs of `status=closed`/`POST /trades/{id}/close` (previously never a client-supplied field); response gains computed `roi_percent`/`pnl_percent`. New endpoint `POST /trades/{id}/open` (Section 11.1.1) — the `Planned → Open` transition, firing `TradeOpened` and Evaluation for the first time. `GET /trades` gains `?status=` filtering; `result` no longer accepts `open` as a filter value. |
 
 **Status:** FROZEN. This is the sixth permanent foundational document of TradeOS, after `PROJECT_AUDIT.md`, `TRADEOS_PRODUCT_BIBLE.md`, `TRADEOS_DOMAIN_MODEL.md`, `TRADEOS_SYSTEM_ARCHITECTURE.md`, and `TRADEOS_DATABASE_DESIGN.md`.
 **Next document:** to be determined.

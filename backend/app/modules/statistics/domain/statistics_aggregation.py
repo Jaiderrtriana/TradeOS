@@ -13,12 +13,24 @@ for these; confirmed absent across the Domain Model, Backend Blueprint,
 API Specification, and Product Bible before implementation began):
 
 - **Win Rate** = count(result == "tp") / count(closed trades), where
-  "closed" means `result != "open"` (Domain Model §2.3: "the proportion
-  of closed Trades that resulted in TP" — a break-even trade is a closed
-  Trade, so it is in the denominator, but never in the numerator; it is
-  not separately "counted as a loss," it simply isn't a win). Returned as
-  a raw 0-1 ratio, never pre-multiplied by 100 — same convention as
+  "closed" means `result is not None` (v2.0, Trade Entry redesign,
+  Domain Model KDD-07: `status`/`result` split, `'open'` retired as a
+  `result` value — an `Open` Trade now has `result = None`, not
+  `result = "open"`; the closed-trade test below was updated accordingly,
+  numerically identical to the original resolution for every Trade that
+  existed before v2.0). Domain Model §2.3: "the proportion of closed
+  Trades that resulted in TP" — a break-even trade is a closed Trade, so
+  it is in the denominator, but never in the numerator; it is not
+  separately "counted as a loss," it simply isn't a win. Returned as a
+  raw 0-1 ratio, never pre-multiplied by 100 — same convention as
   `Trade.captured_pct`.
+- **Planned Trades** (v2.0, Domain Invariant DI-13) never reach this
+  module at all — `TradeRepository.list_all_facts_for_statistics`
+  excludes `status = planned` at the query itself, so every `StatisticsFact`
+  this module ever sees is already either `Open` or `Closed`. This module
+  has no `status` field of its own and does not need one: `Open` vs.
+  `Closed` is exactly what `result is None` vs. `result is not None`
+  already distinguishes.
 - **Expectancy** = **Average R** = the arithmetic mean of `r_multiple`
   across every closed Trade (open Trades excluded — `r_multiple` is
   `None` for them, per `compute_r_multiple`; break-even Trades
@@ -93,12 +105,12 @@ class StatisticsFact:
     """One Trade's contribution to an aggregation — deliberately not
     Trading's own `TradeStatisticsRecord`; this domain layer depends on
     nothing outside itself. `result` uses the same literal strings
-    Trading's own schema does (`"open"`/`"tp"`/`"sl"`/`"be"`) as a
-    structural literal, never importing `trading.domain.trade`'s
-    constants — same precedent `TagMistakeUseCase` already established
-    (Sprint 4.3) for `"mistake_tag"`."""
+    Trading's own schema does (`None`/`"tp"`/`"sl"`/`"be"` — `'open'`
+    retired as a value in v2.0) as a structural literal, never importing
+    `trading.domain.trade`'s constants — same precedent `TagMistakeUseCase`
+    already established (Sprint 4.3) for `"mistake_tag"`."""
 
-    result: str
+    result: str | None
     realized_pnl: float
     r_multiple: float | None
     strategy_id: uuid.UUID | None
@@ -145,7 +157,7 @@ def _mean(values: list[float]) -> float | None:
 
 
 def aggregate_statistics(facts: list[StatisticsFact]) -> StatisticsSummary:
-    closed_facts = [f for f in facts if f.result != "open"]
+    closed_facts = [f for f in facts if f.result is not None]
 
     win_rate = (
         sum(1 for f in closed_facts if f.result == "tp") / len(closed_facts)

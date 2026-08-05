@@ -21,7 +21,12 @@
 import type { ChecklistAnswers } from "../../shared/checklist";
 
 export type Direction = "long" | "short";
-export type TradeResult = "open" | "tp" | "sl" | "be";
+/** v2.0 (Trade Entry redesign, Domain Model KDD-07): `status` is now
+ * independent of `result` — a Trade's lifecycle stage. */
+export type TradeStatus = "planned" | "open" | "closed";
+/** v2.0: `"open"` is retired as a `result` value — `result` is `null`
+ * until a Trade is `Closed`. */
+export type TradeResult = "tp" | "sl" | "be";
 export type CloseResult = "tp" | "sl" | "be";
 
 export interface CriterionBreakdownRow {
@@ -82,12 +87,17 @@ interface TradeCore {
   id: string;
   market: string;
   direction: Direction;
-  entry_price: number;
-  stop_loss: number;
+  status: TradeStatus;
+  // Absent while status = planned (v2.0) — required once status is
+  // open|closed (Domain Model INV-TRADE-02).
+  entry_price: number | null;
+  stop_loss: number | null;
+  take_profit: number | null;
   exit_price: number | null;
   size: number;
+  margin_used: number | null;
   leverage: string;
-  result: TradeResult;
+  result: TradeResult | null;
   realized_pnl: number;
   mfe_price: number | null;
   mae_price: number | null;
@@ -96,7 +106,7 @@ interface TradeCore {
   setup_id: string | null;
   session_id: string | null;
   entry_trigger_id: string | null;
-  entered_at: string;
+  entered_at: string | null;
   closed_at: string | null;
   created_at: string;
   updated_at: string;
@@ -107,11 +117,15 @@ interface TradeCore {
   mae_r: number | null;
   captured_pct: number | null;
   potential_left_r: number | null;
+  roi_percent: number | null;
+  pnl_percent: number | null;
 }
 
-/** `POST`/`PATCH`/`close`/`reevaluate`'s response shape. */
+/** `POST`/`PATCH`/`close`/`open`/`reevaluate`'s response shape. `evaluation`
+ * is `null` while `status = planned` — no Evaluation exists yet (Domain
+ * Invariant DI-13). */
 export interface Trade extends TradeCore {
-  evaluation: EvaluationSnapshot;
+  evaluation: EvaluationSnapshot | null;
 }
 
 /** `GET /trades/{id}` — `Trade` plus `checklist_answers` (§7.4: "fetched
@@ -121,9 +135,10 @@ export interface TradeDetail extends Trade {
 }
 
 /** `GET /trades` list item — every `Trade` fact except `checklist_answers`,
- * with the lighter per-engine summary shape (no breakdown rows). */
+ * with the lighter per-engine summary shape (no breakdown rows). `evaluation`
+ * is `null` while `status = planned`, same as the full `Trade` shape. */
 export interface TradeSummary extends TradeCore {
-  evaluation: EvaluationSnapshotSummary;
+  evaluation: EvaluationSnapshotSummary | null;
 }
 
 export interface PaginationMeta {
@@ -142,17 +157,27 @@ export interface TradeMistake {
   created_at: string;
 }
 
-/** `POST /trades` request body. */
+/** `POST /trades` request body. v2.0: `status` is always required and
+ * explicit; `entry_price`/`stop_loss`/`entered_at`/`scoring_profile` are
+ * only required once `status != planned` (enforced server-side by
+ * `Trade.__post_init__`, not re-duplicated as a TS type constraint here —
+ * see `schemas.ts` for the actual conditional validation). */
 export interface RegisterTradePayload {
   market: string;
   direction: Direction;
-  entry_price: number;
-  stop_loss: number;
-  scoring_profile: string;
+  status: TradeStatus;
+  scoring_profile?: string;
+  entry_price?: number;
+  stop_loss?: number;
+  take_profit?: number;
+  entered_at?: string;
   exit_price?: number;
+  result?: CloseResult;
+  closed_at?: string;
+  realized_pnl?: number;
   size?: number;
+  margin_used?: number;
   leverage?: string;
-  result?: TradeResult;
   strategy_id?: string;
   setup_id?: string;
   session_id?: string;
@@ -163,16 +188,30 @@ export interface RegisterTradePayload {
   checklist_answers?: ChecklistAnswers;
 }
 
+/** `POST /trades/{id}/open` request body (new in v2.0) — transitions a
+ * `Planned` Trade to `Open`, triggering Evaluation for the first time. */
+export interface OpenTradePayload {
+  entry_price: number;
+  entered_at: string;
+  scoring_profile: string;
+  stop_loss?: number;
+  take_profit?: number;
+  checklist_answers?: ChecklistAnswers;
+}
+
 /** `PATCH /trades/{id}` request body — every field optional; only fields
  * actually present are applied (`exclude_unset` on the backend). Fields
  * that hold a real nullable domain value accept explicit `null` to clear
- * them; the rest are simple optional overwrites. */
+ * them; the rest are simple optional overwrites. Deliberately excludes
+ * `status` — transitions only ever happen via `open`/`close`. */
 export interface AmendTradePayload {
   market?: string;
   direction?: Direction;
   entry_price?: number;
   stop_loss?: number;
+  take_profit?: number;
   size?: number;
+  margin_used?: number;
   leverage?: string;
   notes?: string;
   strategy_id?: string | null;
@@ -183,10 +222,13 @@ export interface AmendTradePayload {
   mae_price?: number | null;
 }
 
-/** `POST /trades/{id}/close` request body. */
+/** `POST /trades/{id}/close` request body. v2.0: `realized_pnl`/`closed_at`
+ * are now trader-supplied, required fields — never server-computed. */
 export interface CloseTradePayload {
   result: CloseResult;
   exit_price: number;
+  realized_pnl: number;
+  closed_at: string;
   mfe_price?: number;
   mae_price?: number;
 }
@@ -207,6 +249,7 @@ export type TradesSort = "entered_at" | "-entered_at";
 /** `GET /trades` query parameters. */
 export interface ListTradesFilters {
   direction?: Direction;
+  status?: TradeStatus;
   result?: TradeResult;
   entered_after?: string;
   entered_before?: string;

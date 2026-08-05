@@ -3859,3 +3859,237 @@ needed — Playbook's own Key Components, per the Traceability Matrix, are
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Trade Entry Redesign v2.0 — Status/Result Split, Planned Trades, Take Profit, Margin Used
+
+Not a Master Plan sprint — a user-requested redesign of the Trade domain
+model and creation flow, approved through a four-turn review cycle: (1)
+an initial request was **stopped** because it contradicted the frozen
+Domain Model (no `Planned` state existed; `result` had no room for a
+third "not yet traded" state; Sprint 4.1 had explicitly decided
+`scoring_profile` must always be required); (2) the user redirected the
+analysis to use `legacy/Trading Journal v2.0 Stable.xlsx`'s `📒 Trades
+simple`/`📒 Trades` sheets as the literal source of truth, inspected
+directly via `openpyxl` (cell values, data validations, formula vs.
+manual-input cells) rather than assumption — this upgraded the original
+request from "contradicts the frozen model" to "reveals a genuine gap
+the frozen model never captured": both sheets really do have a 3-state
+`Estado` column (`No iniciado`/`Activo`/`Cerrado`), a real `TP` column,
+and a `Margin` column distinct from Position Size; (3) the user approved
+the Status/Result split, Take Profit, and Margin Used, while explicitly
+**rejecting** storing `ROI %`/`P&L %` ("nunca almacenar información
+derivable" — they must stay computed) and rejecting the endpoint name
+`activate` in favor of `open`, matching the project's existing verb
+pattern (`register`/`amend`/`close`/`reevaluate`); (4) final approval
+given with the explicit, rare instruction to update the frozen
+documentation first, in order (Domain Model → Database Design → API
+Specification → Master Plan → CHANGELOG), and only then implement code —
+followed exactly, including a full MAJOR version bump of the Domain
+Model (§20's own mandated process: Traceability Appendix + Domain
+Invariants + Business Constraints Registry all updated in the same
+revision).
+
+### Documentation (updated first, per explicit instruction)
+- `docs/03_TRADEOS_DOMAIN_MODEL.md` v1.1 → **v2.0** (MAJOR — redefines
+  `TradeResult`, introduces `TradeStatus`): new **KDD-07** (§6, full
+  Excel-cited decision record); Trade entity (§8.1) rewritten — Owned
+  Information, Lifecycle (`Planned → Open → Closed(TP|SL|BE)`),
+  Invariants; §13.1 lifecycle diagram redrawn; **DI-13** (Planned never
+  scored, never in Analytics) and **DI-14** (`roi_percent`/`pnl_percent`
+  always computed, never stored) added to §14; **INV-TRADE-02** redefined
+  and **INV-TRADE-04** added (Planned → Open only, never directly →
+  Closed) in §15; §18 Traceability Appendix and §21 Document Control
+  updated.
+- `docs/05_TRADEOS_DATABASE_DESIGN.md` v1.1 → v1.2: §6.9 `trading.trades`
+  rewritten — `status` column (new, `NOT NULL`, no default);
+  `take_profit`/`margin_used` (new, nullable); `entry_price`/`stop_loss`/
+  `entered_at` relaxed to nullable; `result` relaxed to nullable, values
+  narrowed to `tp`/`sl`/`be` (`'open'` retired); `roi_percent`/
+  `pnl_percent` explicitly *not* added (computed-only, DI-14); all four
+  CHECK constraints rewritten (`ck_trades_status` new,
+  `ck_trades_inv_trade_02_status_fields` redefined per status).
+- `docs/06_TRADEOS_API_SPECIFICATION.md` v1.1 → v1.2: `POST /trades`
+  rewritten (conditional-required fields per `status`); new §11.1.1
+  `POST /trades/{id}/open` (full spec + flow diagram, mirroring §11.1's
+  style); `POST /trades/{id}/close` now requires `realized_pnl`/
+  `closed_at` in the body (previously server-computed/optional); `GET
+  /trades` gains `?status=` filter, `result` no longer accepts `open`.
+- `docs/09_TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` — reviewed, **no
+  changes needed** (operates at an abstraction level this redesign
+  doesn't touch: INV-TRADE-01/02 IDs remain valid, "Simple/Pro share one
+  domain model" still holds).
+
+### Backend — Added
+- `backend/alembic/versions/0012_trade_status_result_split.py` — adds
+  `status`/`take_profit`/`margin_used`; backfills `status` from the
+  retired `result='open'` value, then clears it to `NULL`; relaxes
+  `entry_price`/`stop_loss`/`entered_at`/`result` to nullable; rewrites
+  all four CHECK constraints; `entered_at`'s index becomes partial
+  (`WHERE entered_at IS NOT NULL`).
+- `backend/app/modules/trading/application/open_trade.py` —
+  `OpenTradeUseCase`, the `Planned → Open` transition. Runs Evaluation
+  for the first time (identical flow to `RegisterTradeUseCase`'s own
+  Evaluation branch, never duplicated), publishes `TradeOpened` then
+  `TradeEvaluated`.
+- `tests/trading/test_open_trade_flow.py` (12 new tests) — Planned
+  registration needs no entry facts/scoring_profile; `evaluation`/
+  `checklist_answers` are `null`/`{}` for a Planned Trade; `GET
+  /trades/{id}/evaluation` on a Planned Trade is `404`, not `500`; `GET
+  /trades?status=` filter; the full `open` transition (success, `409`
+  not-planned, `422` stop-placement, `404`); Statistics fully ignores a
+  Planned Trade.
+
+### Backend — Modified
+- `domain/trade.py` — `PLANNED`/`OPEN`/`CLOSED` status constants;
+  `RESULTS` narrowed to `tp`/`sl`/`be`; `validate_status_fields` (renamed
+  from `validate_close_requires_result_and_exit_price`) now branches on
+  `status`, not `result`; `compute_r_multiple`/`mfe_r`/`mae_r` guard
+  `None` `entry_price`/`stop_loss`; new `roi_percent`/`pnl_percent`
+  properties (`realized_pnl / margin_used`, then `/ leverage`) — computed
+  only, per DI-14; new `_parse_leverage_multiplier` (mirrors the Excel's
+  own `VALUE(SUBSTITUTE(G2,"X",""))`).
+- `infrastructure/models.py`, `repository.py` — new columns; nullable
+  `entry_price`/`stop_loss`/`entered_at`/`result`; `list_all` gains a
+  `status` filter; `list_all_facts_for_statistics` excludes
+  `status='planned'` **at the query itself** (DI-13 — a Planned Trade
+  never reaches Statistics' aggregation code at all, not filtered there).
+- `application/register_trade.py` — skips the entire Evaluation branch
+  (no `ChecklistSnapshot`/`EvaluationSnapshot`/`TradeEvaluated`) when
+  `status='planned'`; `scoring_profile` required only once `status !=
+  planned`; `closed_at`/`realized_pnl` now accepted directly from the
+  request (no longer server-computed).
+- `application/close_trade.py` — checks `status == OPEN` (not `result !=
+  OPEN`, retired); requires `realized_pnl`/`closed_at` in the request.
+- `application/amend_trade.py` — `take_profit`/`margin_used` added to
+  `AMENDABLE_FIELDS`; `status` deliberately still not amendable
+  (transitions only via `open`/`close`).
+- `application/get_trade.py`, `get_trade_evaluation.py` — a missing
+  Checklist/Evaluation Snapshot is a `RuntimeError` (data-integrity bug)
+  only when `status != planned`; for a Planned Trade it's the correct,
+  expected `None`/`404`.
+- `statistics/domain/statistics_aggregation.py` — `f.result != "open"` →
+  `f.result is not None` (numerically identical for every pre-v2.0
+  Trade, correct for the new `None`-while-Open semantics).
+- `presentation/schemas.py`, `router.py` — new `OpenTradeRequest` +
+  `POST /trades/{id}/open`; `TradeResponse`/`TradeSummaryResponse` gain
+  `status`/`take_profit`/`margin_used`/`roi_percent`/`pnl_percent`,
+  nullable `entry_price`/`stop_loss`/`entered_at`/`result`/`evaluation`;
+  `GET /trades` gains `?status=`; keyset pagination's cursor is only
+  built from a non-`NULL` `entered_at` (a page ending on a Planned row
+  simply stops rather than crash-encoding a `NULL` boundary — the one
+  known, accepted limitation of mixing a nullable sort key into existing
+  keyset pagination, not a full redesign of it).
+
+### Frontend — Added
+- `components/TradeTypeDialog.tsx` — the approved "Option 4" resolution
+  for `scoring_profile` (relabeled "Trade Type" in the UI): rather than
+  a permanently-visible required field or a silent default, this dialog
+  pops up **only at submission time**, only if left empty, prompting for
+  one before re-submitting. Deliberately not built on `ConfirmDialog`
+  (reserved for irreversible-action confirmations) — built on the shared
+  `Modal` primitive instead, like every other Trading dialog.
+- `components/OpenTradeModal.tsx` — `POST /trades/{id}/open`'s UI,
+  surfaced from `ActionBar` only while `status='planned'`.
+- `e2e/trading.spec.ts` — 2 new tests: the full Planned → Open lifecycle
+  (no Evaluation until opened; Amend/Open/Delete only, no Close/
+  Re-evaluate while Planned; Evaluation appears immediately after
+  opening), and the `TradeTypeDialog` just-in-time prompt end to end.
+
+### Frontend — Modified
+- `types.ts`, `schemas.ts`, `api.ts` — `TradeStatus`; `TradeResult`
+  narrowed (`"open"` retired); nullable `entry_price`/`stop_loss`/
+  `entered_at`/`result`/`evaluation`; new `take_profit`/`margin_used`/
+  `roi_percent`/`pnl_percent`; `tradeEntrySchema`'s `superRefine` now
+  branches on `status` exactly like the backend's
+  `validate_status_fields` (required fields are shape-optional in Zod,
+  made conditionally required only via `superRefine` — matching the
+  backend's own "Pydantic validates shape, the domain validates the
+  business rule" layering, never duplicated as a hard-required Zod
+  field); new `buildOpenTradeSchema(direction)` factory (direction isn't
+  part of the `open` request body, so INV-TRADE-01 re-validation needs it
+  supplied externally).
+- `SimpleForm.tsx` — full redesign: `status` Select drives dynamic field
+  visibility (`Planned` shows only Market/Direction; `Open` adds Trade
+  Type/Entry/Stop/Take Profit/Entry Date; `Closed` adds Exit Price/
+  Result/Close Date/Realized P&L) — switching back to `Planned` clears
+  the now-hidden fields rather than letting a stale value silently ride
+  along in the submitted payload.
+- `ProForm.tsx` — `exit_price`/`result`/`take_profit` moved into
+  `SimpleForm` (no longer duplicated here); adds `margin_used`.
+- `CloseTradeModal.tsx`, `AmendTradeModal.tsx` — `realized_pnl`/
+  `closed_at` and `take_profit`/`margin_used` fields respectively.
+- `ActionBar.tsx` — `Open` offered only while `status='planned'`; `Close`
+  gated on `status='open'` (previously the now-retired `result==='open'`);
+  `Re-evaluate` hidden while `status='planned'` (DI-13 — nothing to
+  re-run yet).
+- `TradeSummaryCard.tsx`, `EvaluationSummaryCard.tsx`,
+  `TradesListPage.tsx`, `FilterBar.tsx` — status badges, nullable-field
+  handling, a "still Planned, no Evaluation yet" empty state, `?status=`
+  filter, `"open"` removed from the Result filter's options.
+
+### Bugs found and fixed during implementation
+- **Migration `0012`'s own backfill ran in the wrong order**: `UPDATE
+  trading.trades SET result = NULL WHERE result = 'open'` was sequenced
+  *before* `result`'s `NOT NULL` constraint was relaxed — violates that
+  still-active constraint for every currently-open Trade. Caught
+  immediately on the first real `alembic upgrade head` against the dev
+  database (not by any test, since the test suite's schema is created
+  fresh from the ORM models, never by replaying migrations against
+  pre-existing data) — fixed by moving the three `alter_column(...,
+  nullable=True)` calls before the backfill `UPDATE`s. Round-trip
+  verified (`upgrade → downgrade → upgrade`) against the real dev
+  database afterward.
+- **A real frontend submission bug**, also caught only by driving the
+  actual running stack, not by any of `tsc`/`eslint`/`vitest`: an
+  untouched `<input type="date">` submits `""`, not `undefined` (RHF
+  reads the DOM value directly) — `tradeEntrySchema`'s `entered_at`/
+  `closed_at` therefore reached the backend as `""` even when correctly
+  left blank for a Planned Trade, and Pydantic's `datetime` field rejects
+  `""` ("too short") rather than treating it as absent. Registering a
+  Planned Trade through the actual UI silently failed to navigate away
+  from the still-open modal. Fixed with a `optionalDateString` Zod
+  transform (`"" → undefined`) applied to both fields.
+- Two E2E selector-strictness issues in the new Planned/Open test,
+  caught on first run: `getByText("PLANNED")` matched both the status
+  badge and the "still Planned" empty-state sentence (fixed with `{
+  exact: true }` on the badge assertion); playwright-test-generated
+  `.mjs` debug script needed `@playwright/test`'s bundled `chromium`
+  import, not the unlisted `playwright` package.
+
+### Verification performed
+- Backend: `pytest` — **352 passed** (38 pre-existing tests updated for
+  the new required `status` field/nullable core facts, 12 new); `ruff
+  format --check` / `ruff check` — clean; `mypy app` — clean, 195 source
+  files.
+- Frontend: `tsc -b --noEmit` — clean; `eslint .` — clean; `vitest run` —
+  **88 passed** (20 in `schemas.test.ts`, 6 in an updated
+  `TradeSummaryCard.test.tsx`); `vite build` — succeeds.
+- Migration: applied to the real dev database (Docker Postgres 16, not
+  the test suite's fresh-from-ORM schema) — `upgrade head` succeeded
+  after the ordering fix above; `downgrade -1` → `upgrade head` round
+  trip verified clean.
+- E2E: real stack (Docker Postgres 16 + `uvicorn --reload` + `vite dev`,
+  both already running under a session this agent could not terminate —
+  confirmed via a direct `curl` probe that both had already hot-reloaded
+  every backend/frontend change before any E2E test ran, rather than
+  assumed). `e2e/trading.spec.ts` — 5/5, including both new Planned/Open
+  and `TradeTypeDialog` tests. Four other spec files
+  (`journal`/`mistakes`/`playbook`/`statistics`) had their own
+  trade-creation fixtures on the old payload shape — updated identically.
+  Full suite: **26/27 passed**; the one failure
+  (`evaluation-preview.spec.ts`, unrelated to Trading, a debounce-timing
+  assertion) reproduces only under parallel-worker load and passed
+  cleanly 4/4 in isolation — the same class of pre-existing flake already
+  documented in Sprint 6.2/7.2's closing reports, not a regression.
+
+### Deferred (explicitly, by the user)
+- The 4-bucket Pro Mode Excel audit (Ya existen / Faltan en Simple /
+  Faltan en Pro / No deberían existir) and any resulting Pro Mode field
+  expansion — required before touching Pro Mode further, not part of
+  this redesign.
+- Dashboard's future Open/Planned/Closed trade-count breakdown — a
+  documented future Phase 8 concern (API Specification/Domain Model note
+  it as supportable), no implementation here.
+
+### Confirmation
+No `git push` was run at any point.

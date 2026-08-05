@@ -97,8 +97,10 @@ def _base_payload(suffix: str, criteria: dict[str, tuple[str, str]], **overrides
     payload = {
         "market": "EURUSD",
         "direction": "long",
+        "status": "open",
         "entry_price": 100.0,
         "stop_loss": 95.0,
+        "entered_at": "2026-01-01T00:00:00Z",
         "scoring_profile": PROFILE,
         "checklist_answers": {
             criteria["confidence"][1]: "Yes",
@@ -120,14 +122,22 @@ async def test_register_trade_returns_full_trade_with_evaluation(client, db_sess
     )
 
     payload = _base_payload(
-        suffix, criteria, exit_price=108.0, result="tp", mfe_price=110.0, mae_price=97.0
+        suffix,
+        criteria,
+        status="closed",
+        exit_price=108.0,
+        result="tp",
+        realized_pnl=80.0,
+        closed_at="2026-01-02T00:00:00Z",
+        mfe_price=110.0,
+        mae_price=97.0,
     )
     response = await client.post("/api/v1/trades", json=payload, headers=headers)
     assert response.status_code == 201, response.text
     body = response.json()
 
     assert body["result"] == "tp"
-    assert body["closed_at"] is not None  # server-set, never accepted from the request
+    assert body["closed_at"] is not None  # trader-supplied, echoed back as-is
     assert body["r_multiple"] == 1.6
     assert body["mfe_r"] == 2.0
     assert body["captured_pct"] == 0.8  # raw ratio, never scaled to 80.0
@@ -156,7 +166,8 @@ async def test_register_trade_open_trade_has_null_computed_properties(client):
     )
     assert response.status_code == 201, response.text
     body = response.json()
-    assert body["result"] == "open"
+    assert body["status"] == "open"
+    assert body["result"] is None
     assert body["closed_at"] is None
     assert body["r_multiple"] is None
     assert body["captured_pct"] is None
@@ -262,8 +273,10 @@ async def test_register_trade_requires_authentication(client):
         json={
             "market": "EURUSD",
             "direction": "long",
+            "status": "open",
             "entry_price": 100.0,
             "stop_loss": 95.0,
+            "entered_at": "2026-01-01T00:00:00Z",
             "scoring_profile": PROFILE,
         },
     )

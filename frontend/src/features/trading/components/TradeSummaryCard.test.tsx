@@ -12,12 +12,15 @@ function buildTrade(overrides: Partial<TradeDetail> = {}): TradeDetail {
     id: "trade-1",
     market: "EURUSD",
     direction: "long",
+    status: "open",
     entry_price: 100,
     stop_loss: 95,
+    take_profit: null,
     exit_price: null,
     size: 1,
+    margin_used: null,
     leverage: "",
-    result: "open",
+    result: null,
     realized_pnl: 0,
     mfe_price: null,
     mae_price: null,
@@ -35,6 +38,8 @@ function buildTrade(overrides: Partial<TradeDetail> = {}): TradeDetail {
     mae_r: null,
     captured_pct: null,
     potential_left_r: null,
+    roi_percent: null,
+    pnl_percent: null,
     checklist_answers: {},
     evaluation: {
       confidence: EMPTY_ENGINE,
@@ -48,11 +53,18 @@ function buildTrade(overrides: Partial<TradeDetail> = {}): TradeDetail {
 }
 
 describe("TradeSummaryCard", () => {
-  it("renders the market as a heading and the direction/result badges", () => {
+  it("renders the market as a heading and the direction/status badges", () => {
     render(<TradeSummaryCard trade={buildTrade()} />);
     expect(screen.getByRole("heading", { name: "EURUSD" })).toBeInTheDocument();
     expect(screen.getByText("Long")).toBeInTheDocument();
     expect(screen.getByText("OPEN")).toBeInTheDocument();
+  });
+
+  it("does not render a result badge while result is null", () => {
+    render(<TradeSummaryCard trade={buildTrade()} />);
+    expect(screen.queryByText("TP")).not.toBeInTheDocument();
+    expect(screen.queryByText("SL")).not.toBeInTheDocument();
+    expect(screen.queryByText("BE")).not.toBeInTheDocument();
   });
 
   it("shows an em dash for every not-yet-computed field on an open trade", () => {
@@ -61,10 +73,29 @@ describe("TradeSummaryCard", () => {
     expect(screen.getByText("R-Multiple").nextSibling).toHaveTextContent("—");
   });
 
+  it("shows an em dash for entry facts on a planned trade", () => {
+    render(
+      <TradeSummaryCard
+        trade={buildTrade({
+          status: "planned",
+          entry_price: null,
+          stop_loss: null,
+          entered_at: null,
+          evaluation: null,
+        })}
+      />,
+    );
+    expect(screen.getByText("PLANNED")).toBeInTheDocument();
+    expect(screen.getByText("Entry Price").nextSibling).toHaveTextContent("—");
+    expect(screen.getByText("Stop Loss").nextSibling).toHaveTextContent("—");
+    expect(screen.getByText("Entered At").nextSibling).toHaveTextContent("—");
+  });
+
   it("renders computed values once the trade is closed", () => {
     render(
       <TradeSummaryCard
         trade={buildTrade({
+          status: "closed",
           result: "tp",
           exit_price: 110,
           r_multiple: 2,

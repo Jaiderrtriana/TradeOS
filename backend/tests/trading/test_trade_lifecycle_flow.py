@@ -105,8 +105,10 @@ def _base_payload(criteria: dict[str, tuple[str, str]], **overrides) -> dict:
     payload = {
         "market": "EURUSD",
         "direction": "long",
+        "status": "open",
         "entry_price": 100.0,
         "stop_loss": 95.0,
+        "entered_at": "2026-01-01T00:00:00Z",
         "scoring_profile": PROFILE,
         "checklist_answers": {
             criteria["confidence"][1]: "Yes",
@@ -136,7 +138,16 @@ async def test_amend_trade_updates_facts_and_recomputes_properties(client):
     suffix = uuid.uuid4().hex[:8]
     _version_id, criteria = await _create_and_publish_version(client, headers, suffix)
     trade = await _register_trade(
-        client, headers, criteria, exit_price=108.0, result="tp", mfe_price=110.0, mae_price=97.0
+        client,
+        headers,
+        criteria,
+        status="closed",
+        exit_price=108.0,
+        result="tp",
+        realized_pnl=80.0,
+        closed_at="2026-01-02T00:00:00Z",
+        mfe_price=110.0,
+        mae_price=97.0,
     )
 
     response = await client.patch(
@@ -183,7 +194,7 @@ async def test_amend_trade_ignores_result_and_exit_price_fields(client):
     )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["result"] == "open"
+    assert body["result"] is None
     assert body["exit_price"] is None
 
 
@@ -221,12 +232,19 @@ async def test_close_trade_success(client):
     suffix = uuid.uuid4().hex[:8]
     _version_id, criteria = await _create_and_publish_version(client, headers, suffix)
     trade = await _register_trade(client, headers, criteria)
-    assert trade["result"] == "open"
+    assert trade["result"] is None
     assert trade["closed_at"] is None
 
     response = await client.post(
         f"/api/v1/trades/{trade['id']}/close",
-        json={"result": "tp", "exit_price": 108.0, "mfe_price": 110.0, "mae_price": 97.0},
+        json={
+            "result": "tp",
+            "exit_price": 108.0,
+            "realized_pnl": 80.0,
+            "closed_at": "2026-01-02T00:00:00Z",
+            "mfe_price": 110.0,
+            "mae_price": 97.0,
+        },
         headers=headers,
     )
     assert response.status_code == 200, response.text
@@ -245,7 +263,12 @@ async def test_close_trade_preserves_existing_mfe_mae_when_omitted(client):
 
     response = await client.post(
         f"/api/v1/trades/{trade['id']}/close",
-        json={"result": "tp", "exit_price": 108.0},
+        json={
+            "result": "tp",
+            "exit_price": 108.0,
+            "realized_pnl": 80.0,
+            "closed_at": "2026-01-02T00:00:00Z",
+        },
         headers=headers,
     )
     assert response.status_code == 200, response.text
@@ -261,14 +284,24 @@ async def test_close_trade_already_closed_returns_409(client):
     trade = await _register_trade(client, headers, criteria)
     first = await client.post(
         f"/api/v1/trades/{trade['id']}/close",
-        json={"result": "tp", "exit_price": 108.0},
+        json={
+            "result": "tp",
+            "exit_price": 108.0,
+            "realized_pnl": 80.0,
+            "closed_at": "2026-01-02T00:00:00Z",
+        },
         headers=headers,
     )
     assert first.status_code == 200, first.text
 
     second = await client.post(
         f"/api/v1/trades/{trade['id']}/close",
-        json={"result": "sl", "exit_price": 90.0},
+        json={
+            "result": "sl",
+            "exit_price": 90.0,
+            "realized_pnl": -50.0,
+            "closed_at": "2026-01-03T00:00:00Z",
+        },
         headers=headers,
     )
     assert second.status_code == 409
@@ -278,7 +311,9 @@ async def test_close_trade_already_closed_returns_409(client):
 async def test_close_trade_missing_exit_price_returns_422(client):
     headers = await _auth_headers(client)
     response = await client.post(
-        f"/api/v1/trades/{uuid.uuid4()}/close", json={"result": "tp"}, headers=headers
+        f"/api/v1/trades/{uuid.uuid4()}/close",
+        json={"result": "tp", "realized_pnl": 80.0, "closed_at": "2026-01-02T00:00:00Z"},
+        headers=headers,
     )
     # Pydantic-level 422 (exit_price is a required field of CloseTradeRequest).
     assert response.status_code == 422

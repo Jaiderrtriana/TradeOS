@@ -2,13 +2,24 @@
 CloseTradeUseCase — `TRADEOS_BACKEND_BLUEPRINT.md` §4.2;
 `TRADEOS_API_SPECIFICATION.md` §6.4, `POST /trades/{id}/close`.
 
-Business Flow (literal order from §4.2): validate `result`+`exit_price`
-supplied together (INV-TRADE-02, already enforced by
-`CloseTradeRequest`'s own required fields, re-validated here via the same
-free function `Trade`/`AmendTrade` use, never duplicated) -> validate the
-Trade is not already closed (`409`, state conflict) -> update Trade's
-`result`/`exit_price`/`mfe_price`/`mae_price`/`closed_at` -> publish
-`TradeClosed`.
+Business Flow (literal order from §4.2): validate the Trade is `Open`
+(`409` Conflict otherwise — INV-TRADE-04: a `Planned` Trade must call
+`open` first; an already-`Closed` Trade rejects outright, closing is not
+idempotent) -> update Trade's `status`/`result`/`exit_price`/
+`realized_pnl`/`closed_at`/`mfe_price`/`mae_price` -> re-validate
+INV-TRADE-02 via the same `validate_status_fields` free function every
+other write path uses, never duplicated -> publish `TradeClosed`.
+
+v2.0 (Trade Entry redesign, Domain Model KDD-07): `realized_pnl` and
+`closed_at` are now trader-supplied request fields (e.g. from the
+exchange / the trader's own record of when they closed) — the exact same
+"never derive what can't be derived" reasoning as `roi_percent`/
+`pnl_percent` staying computed-only, but in the opposite direction:
+`realized_pnl` genuinely cannot be derived from price/size alone (fees,
+funding are not captured), so it must be supplied, not computed.
+`closed_at` is no longer set to `now()` server-side — a `Closed` Trade
+can be entered retroactively (backfilling historical trades) with its
+real close timestamp.
 
 `mfe_price`/`mae_price` are optional here ("this is the natural moment to
 supply them since the trade's full excursion is now known," §6.4) — read
@@ -22,11 +33,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.trading.domain.trade import (
-    OPEN,
-    Trade,
-    validate_close_requires_result_and_exit_price,
-)
+from app.modules.trading.domain.trade import CLOSED, OPEN, Trade, validate_status_fields
 from app.modules.trading.infrastructure.repository import TradeRepository
 from app.platform.errors import ConflictError, NotFoundError
 from app.platform.events.base import DomainEvent
@@ -51,25 +58,34 @@ class CloseTradeUseCase:
         *,
         result: str,
         exit_price: float,
+        realized_pnl: float,
+        closed_at: datetime,
         mfe_price: float | None = None,
         mae_price: float | None = None,
     ) -> Trade:
         trade = await self._trades.get_by_id(trade_id)
         if trade is None or trade.user_id != user_id or trade.deleted_at is not None:
             raise NotFoundError(f"No trade with id '{trade_id}'.")
-        if trade.result != OPEN:
-            raise ConflictError("This trade is already closed.")
+        if trade.status != OPEN:
+            raise ConflictError("This trade is not open.")
 
+        trade.status = CLOSED
         trade.result = result
         trade.exit_price = exit_price
+        trade.realized_pnl = realized_pnl
+        trade.closed_at = closed_at
         if mfe_price is not None:
             trade.mfe_price = mfe_price
         if mae_price is not None:
             trade.mae_price = mae_price
-        trade.closed_at = datetime.now(timezone.utc)
 
-        validate_close_requires_result_and_exit_price(
-            trade.result, trade.exit_price, trade.closed_at
+        validate_status_fields(
+            trade.status,
+            trade.entry_price,
+            trade.entered_at,
+            trade.exit_price,
+            trade.closed_at,
+            trade.result,
         )
 
         trade.updated_at = datetime.now(timezone.utc)

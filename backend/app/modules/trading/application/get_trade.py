@@ -12,13 +12,19 @@ single-resource endpoint").
 404 is identical for not-found, not-owned, and soft-deleted -- same
 convention as every Sprint 4.2 write action (`TRADEOS_API_SPECIFICATION.md`
 §8/§14: ownership is never leaked by a different error shape).
+
+v2.0 (Trade Entry redesign, Domain Model DI-13): a `Planned` Trade has no
+ChecklistSnapshot/EvaluationSnapshot yet by definition -- `None` is the
+correct, expected result for one, not a data-integrity bug, so it's only
+treated as a `RuntimeError` (data-integrity bug) for a Trade whose
+`status != planned`, where both are still guaranteed to exist.
 """
 
 import uuid
 
 from app.modules.trading.domain.checklist_snapshot import ChecklistSnapshot
 from app.modules.trading.domain.evaluation_snapshot import EvaluationSnapshot
-from app.modules.trading.domain.trade import Trade
+from app.modules.trading.domain.trade import PLANNED, Trade
 from app.modules.trading.infrastructure.repository import (
     ChecklistSnapshotRepository,
     EvaluationSnapshotRepository,
@@ -29,7 +35,10 @@ from app.platform.errors import NotFoundError
 
 class GetTradeResult:
     def __init__(
-        self, trade: Trade, checklist_snapshot: ChecklistSnapshot, evaluation: EvaluationSnapshot
+        self,
+        trade: Trade,
+        checklist_snapshot: ChecklistSnapshot | None,
+        evaluation: EvaluationSnapshot | None,
     ) -> None:
         self.trade = trade
         self.checklist_snapshot = checklist_snapshot
@@ -52,19 +61,21 @@ class GetTradeUseCase:
         if trade is None or trade.user_id != user_id or trade.deleted_at is not None:
             raise NotFoundError(f"No trade with id '{trade_id}'.")
 
-        # Every Trade owns exactly one ChecklistSnapshot and exactly one
-        # current EvaluationSnapshot, maintained since RegisterTrade --
-        # `None` here would be a genuine data-integrity bug elsewhere, not
-        # a legitimate "not found" for a Trade that does exist, so this
-        # fails loudly rather than being folded into the 404 above (same
-        # convention as the router's own `_require_current_evaluation`).
         checklist_snapshot = await self._checklist_snapshots.get_by_trade_id(trade_id)
-        if checklist_snapshot is None:
-            raise RuntimeError(f"Trade '{trade_id}' has no ChecklistSnapshot.")
-
         evaluation = await self._evaluation_snapshots.get_current_by_trade_id(trade_id)
-        if evaluation is None:
-            raise RuntimeError(f"Trade '{trade_id}' has no current EvaluationSnapshot.")
+
+        if trade.status != PLANNED:
+            # Every non-Planned Trade owns exactly one ChecklistSnapshot
+            # and exactly one current EvaluationSnapshot, maintained since
+            # RegisterTrade/OpenTrade -- `None` here would be a genuine
+            # data-integrity bug, not a legitimate "not found" for a Trade
+            # that does exist, so this fails loudly rather than being
+            # folded into the 404 above (same convention as the router's
+            # own `_require_current_evaluation`).
+            if checklist_snapshot is None:
+                raise RuntimeError(f"Trade '{trade_id}' has no ChecklistSnapshot.")
+            if evaluation is None:
+                raise RuntimeError(f"Trade '{trade_id}' has no current EvaluationSnapshot.")
 
         return GetTradeResult(
             trade=trade, checklist_snapshot=checklist_snapshot, evaluation=evaluation

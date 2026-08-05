@@ -17,6 +17,7 @@ over the full set (`overall`).
 """
 
 import uuid
+from datetime import datetime, timezone
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -113,8 +114,14 @@ async def _register_trade(
     payload = {
         "market": "EURUSD",
         "direction": "long",
+        "status": "open",
         "entry_price": entry_price,
         "stop_loss": stop_loss,
+        # Client-supplied now (v2.0 -- the server no longer defaults it):
+        # a fresh timestamp per call, same "each registration is later
+        # than the last" ordering the old server-side `now()` default
+        # gave the Rolling Statistics tests below for free.
+        "entered_at": datetime.now(timezone.utc).isoformat(),
         "scoring_profile": PROFILE,
     }
     if strategy_id is not None:
@@ -129,7 +136,12 @@ async def _register_trade(
 async def _close_trade(client, headers, trade_id: str, *, result: str, exit_price: float) -> None:
     response = await client.post(
         f"/api/v1/trades/{trade_id}/close",
-        json={"result": result, "exit_price": exit_price},
+        json={
+            "result": result,
+            "exit_price": exit_price,
+            "realized_pnl": 0.0,
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+        },
         headers=headers,
     )
     assert response.status_code == 200, response.text

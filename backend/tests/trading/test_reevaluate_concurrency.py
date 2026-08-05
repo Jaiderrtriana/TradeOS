@@ -18,6 +18,7 @@ overridden test client cannot provide.
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 
 import pytest_asyncio
 from sqlalchemy import select, text
@@ -218,8 +219,10 @@ async def _register_trade(session_factory, source_field: str) -> uuid.UUID:
             user_id=USER_ID,
             market="EURUSD",
             direction="long",
+            status="open",
             entry_price=100.0,
             stop_loss=95.0,
+            entered_at=datetime.now(timezone.utc),
             scoring_profile=PROFILE,
             checklist_answers={source_field: "Yes"},
         )

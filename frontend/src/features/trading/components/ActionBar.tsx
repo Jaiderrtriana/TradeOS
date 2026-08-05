@@ -10,21 +10,29 @@ import { tradingKeys } from "../queryKeys";
 import type { TradeDetail } from "../types";
 import { AmendTradeModal } from "./AmendTradeModal";
 import { CloseTradeModal } from "./CloseTradeModal";
+import { OpenTradeModal } from "./OpenTradeModal";
 import { ReevaluateModal } from "./ReevaluateModal";
 
 /**
  * `TRADEOS_FRONTEND_BLUEPRINT.md` §8.3's `ActionBar`: "Amend, Close, Re-
- * evaluate, Delete — each action opens its own Modal/Dialog." Close is
- * only offered while the Trade is still `open` (§5.3: "Close if still
- * Open"). Delete is soft (`DELETE /trades/{id}`, §6.4) — confirmed via
- * the existing `ConfirmDialog`, then navigates back to the Trades List
- * since the Trade Detail route it's currently on no longer resolves.
+ * evaluate, Delete — each action opens its own Modal/Dialog." Delete is
+ * soft (`DELETE /trades/{id}`, §6.4) — confirmed via the existing
+ * `ConfirmDialog`, then navigates back to the Trades List since the Trade
+ * Detail route it's currently on no longer resolves.
+ *
+ * v2.0 (Trade Entry redesign, Domain Model KDD-07): `Open` (new action,
+ * `POST /trades/{id}/open`) is offered only while `status = planned`;
+ * `Close` only while `status = open` (previously gated on the now-retired
+ * `result === "open"`); `Re-evaluate` only once an Evaluation actually
+ * exists, i.e. `status != planned` (Domain Invariant DI-13 — a Planned
+ * Trade has no Evaluation to re-run yet).
  */
 export function ActionBar({ trade }: { trade: TradeDetail }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { reportError } = useErrorReporter();
   const [amendOpen, setAmendOpen] = useState(false);
+  const [openTradeOpen, setOpenTradeOpen] = useState(false);
   const [closeOpen, setCloseOpen] = useState(false);
   const [reevaluateOpen, setReevaluateOpen] = useState(false);
 
@@ -46,7 +54,16 @@ export function ActionBar({ trade }: { trade: TradeDetail }) {
       >
         Amend
       </button>
-      {trade.result === "open" && (
+      {trade.status === "planned" && (
+        <button
+          type="button"
+          onClick={() => setOpenTradeOpen(true)}
+          className="rounded border border-border px-3 py-2 text-sm text-text-primary"
+        >
+          Open
+        </button>
+      )}
+      {trade.status === "open" && (
         <button
           type="button"
           onClick={() => setCloseOpen(true)}
@@ -55,13 +72,15 @@ export function ActionBar({ trade }: { trade: TradeDetail }) {
           Close
         </button>
       )}
-      <button
-        type="button"
-        onClick={() => setReevaluateOpen(true)}
-        className="rounded border border-border px-3 py-2 text-sm text-text-primary"
-      >
-        Re-evaluate
-      </button>
+      {trade.status !== "planned" && (
+        <button
+          type="button"
+          onClick={() => setReevaluateOpen(true)}
+          className="rounded border border-border px-3 py-2 text-sm text-text-primary"
+        >
+          Re-evaluate
+        </button>
+      )}
       <ConfirmDialog
         trigger={
           <button type="button" className="rounded border border-border px-3 py-2 text-sm text-danger">
@@ -76,6 +95,12 @@ export function ActionBar({ trade }: { trade: TradeDetail }) {
       />
 
       <AmendTradeModal trade={trade} open={amendOpen} onOpenChange={setAmendOpen} />
+      <OpenTradeModal
+        tradeId={trade.id}
+        direction={trade.direction}
+        open={openTradeOpen}
+        onOpenChange={setOpenTradeOpen}
+      />
       <CloseTradeModal tradeId={trade.id} open={closeOpen} onOpenChange={setCloseOpen} />
       <ReevaluateModal tradeId={trade.id} open={reevaluateOpen} onOpenChange={setReevaluateOpen} />
     </div>

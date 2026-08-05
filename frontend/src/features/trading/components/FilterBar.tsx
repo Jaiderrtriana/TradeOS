@@ -11,9 +11,15 @@ const DIRECTION_OPTIONS = [
   { value: "short", label: "Short" },
 ];
 
+const STATUS_OPTIONS = [
+  { value: "", label: "Any status" },
+  { value: "planned", label: "Planned" },
+  { value: "open", label: "Open" },
+  { value: "closed", label: "Closed" },
+];
+
 const RESULT_OPTIONS = [
   { value: "", label: "Any result" },
-  { value: "open", label: "Open" },
   { value: "tp", label: "Take Profit" },
   { value: "sl", label: "Stop Loss" },
   { value: "be", label: "Break Even" },
@@ -58,6 +64,17 @@ export function FilterBar({ filters, onChange }: FilterBarProps) {
           onValueChange={(value) => set("direction", value === "" ? undefined : (value as "long" | "short"))}
           options={DIRECTION_OPTIONS}
           aria-label="Filter by direction"
+        />
+      </div>
+      <div>
+        <p className="mb-1 text-sm text-text-secondary">Status</p>
+        <Select
+          value={filters.status ?? ""}
+          onValueChange={(value) =>
+            set("status", value === "" ? undefined : (value as ListTradesFilters["status"]))
+          }
+          options={STATUS_OPTIONS}
+          aria-label="Filter by status"
         />
       </div>
       <div>

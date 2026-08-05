@@ -10,13 +10,6 @@ import { ChecklistSection } from "./ChecklistSection";
 import { SimpleForm } from "./SimpleForm";
 import { TradeEntryScorePreview } from "./TradeEntryScorePreview";
 
-const RESULT_OPTIONS = [
-  { value: "open", label: "Open" },
-  { value: "tp", label: "Take Profit" },
-  { value: "sl", label: "Stop Loss" },
-  { value: "be", label: "Break Even" },
-];
-
 export interface ProFormProps {
   checklistAnswers: ChecklistAnswers;
   onAnswerChange: (sourceField: string, value: string | number | undefined) => void;
@@ -37,10 +30,17 @@ function useCatalogOptions(kind: string) {
 /**
  * Pro Trade Entry — `TRADEOS_FRONTEND_BLUEPRINT.md` Principle 7: "a 'Pro'
  * path that surfaces everything the API accepts, never only the maximal
- * form." Builds on `SimpleForm`'s required fields (same shared form
- * context, `TRADEOS_FRONTEND_BLUEPRINT.md` §8.2's component tree) and
- * adds every optional `POST /trades` field plus the live-scored
- * checklist (§6.3).
+ * form." Builds on `SimpleForm`'s fields (same shared form context,
+ * `TRADEOS_FRONTEND_BLUEPRINT.md` §8.2's component tree) and adds every
+ * remaining optional `POST /trades` field plus the live-scored checklist
+ * (§6.3).
+ *
+ * v2.0 (Trade Entry redesign): `exit_price`/`result`/`closed_at`/
+ * `realized_pnl`/`take_profit` moved into `SimpleForm` itself (dynamic
+ * per-`status` visibility, §8.2's "Simple asks for only what a given
+ * status requires" — Pro composes on top of that, it doesn't duplicate
+ * it). `margin_used` is new here — distinct from `size`, relevant for
+ * futures (Domain Model KDD-07).
  */
 export function ProForm({ checklistAnswers, onAnswerChange }: ProFormProps) {
   const {
@@ -60,37 +60,7 @@ export function ProForm({ checklistAnswers, onAnswerChange }: ProFormProps) {
     <div className="flex flex-col gap-6">
       <SimpleForm />
 
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label htmlFor="exit_price" className="mb-1 block text-sm text-text-secondary">
-            Exit Price
-          </label>
-          <input
-            id="exit_price"
-            type="number"
-            step="any"
-            className="w-full rounded border border-border bg-bg-base px-3 py-2 text-sm text-text-primary"
-            {...register("exit_price")}
-          />
-        </div>
-        <div>
-          <p className="mb-1 text-sm text-text-secondary">Result</p>
-          <Controller
-            name="result"
-            control={control}
-            render={({ field }) => (
-              <Select
-                value={field.value ?? "open"}
-                onValueChange={field.onChange}
-                options={RESULT_OPTIONS}
-                aria-label="Result"
-              />
-            )}
-          />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-3 gap-4">
         <div>
           <label htmlFor="size" className="mb-1 block text-sm text-text-secondary">
             Size
@@ -103,6 +73,18 @@ export function ProForm({ checklistAnswers, onAnswerChange }: ProFormProps) {
             {...register("size")}
           />
           {errors.size && <p className="mt-1 text-xs text-danger">{errors.size.message}</p>}
+        </div>
+        <div>
+          <label htmlFor="margin_used" className="mb-1 block text-sm text-text-secondary">
+            Margin Used
+          </label>
+          <input
+            id="margin_used"
+            type="number"
+            step="any"
+            className="w-full rounded border border-border bg-bg-base px-3 py-2 text-sm text-text-primary"
+            {...register("margin_used")}
+          />
         </div>
         <div>
           <label htmlFor="leverage" className="mb-1 block text-sm text-text-secondary">

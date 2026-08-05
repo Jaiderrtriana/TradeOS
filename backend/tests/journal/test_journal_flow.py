@@ -60,8 +60,10 @@ async def _register_trade(client, headers) -> str:
     payload = {
         "market": "EURUSD",
         "direction": "long",
+        "status": "open",
         "entry_price": 100.0,
         "stop_loss": 95.0,
+        "entered_at": "2026-01-01T00:00:00Z",
         "scoring_profile": PROFILE,
     }
     response = await client.post("/api/v1/trades", json=payload, headers=headers)

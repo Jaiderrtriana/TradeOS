@@ -10,20 +10,24 @@ Application-layer service with `checklist_answers` and the active
 EvaluationSnapshot (+ breakdown rows) in one transaction -> publish
 `TradeRegistered`, then `TradeEvaluated`.
 
-`closed_at` (approved resolution, Sprint 4.1 — no document names a
-`closed_at` input field, yet INV-TRADE-02 requires one whenever
-`result != open`): set to `now()` here, at the moment the transaction is
-processed, whenever `result != open` and `exit_price` is supplied — never
-accepted from the request. Composes with `Trade.__post_init__` for free:
-if `result != open` but no `exit_price` was supplied, `closed_at` stays
-`None` too, and INV-TRADE-02 correctly rejects it as incomplete (the
-documented 422, "missing exit_price").
+v2.0 (Trade Entry redesign, Domain Model KDD-07): `status` is now a
+required, explicit field with no default. `closed_at` (like
+`entry_price`/`entered_at`/`exit_price`/`result`/`realized_pnl`) is a
+trader-supplied fact accepted directly from the request whenever
+`status = closed` — no longer computed as `now()` server-side (Sprint
+4.1's original resolution), since a `Closed` Trade can now be entered
+retroactively (e.g. backfilling historical trades) with its real close
+timestamp. `Trade.__post_init__`'s `validate_status_fields` still
+enforces that every field required by a given `status` is present.
 
-`scoring_profile` (approved resolution, Sprint 4.1 — API Specification
-originally omitted this field from `POST /trades`, even though the
-Evaluation call this Use Case makes requires one): now a required field
-of the request, propagated verbatim to `PreviewEvaluationUseCase` —
-never defaulted, never read from a preference. See CHANGELOG.md.
+`scoring_profile` (Sprint 4.1's original resolution: always required)
+is now required **only once `status != planned`** (API Specification
+§6.4) — a `Planned` Trade has no Checklist/Evaluation yet by definition
+(Domain Invariant DI-13), so this Use Case skips the entire Evaluation
+flow (no `ChecklistSnapshot`, no `EvaluationSnapshot`, no
+`TradeEvaluated` event) when `status = planned`. Evaluation runs for the
+first time either here (Trade created directly as `Open`/`Closed`) or in
+`OpenTradeUseCase` (a Trade that started `Planned`) — never twice.
 
 Catalog reference validation (Preconditions, §4.1): each of
 `strategy_id`/`setup_id`/`session_id`/`entry_trigger_id`, if supplied,
@@ -53,7 +57,7 @@ between two independent reads.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,7 +69,7 @@ from app.modules.evaluation.application.preview_evaluation import PreviewEvaluat
 from app.modules.trading.application.evaluation_snapshot_mapping import build_evaluation_snapshot
 from app.modules.trading.domain.checklist_snapshot import ChecklistSnapshot
 from app.modules.trading.domain.evaluation_snapshot import EvaluationSnapshot
-from app.modules.trading.domain.trade import OPEN, Trade
+from app.modules.trading.domain.trade import PLANNED, Trade
 from app.modules.trading.infrastructure.repository import (
     ChecklistSnapshotRepository,
     EvaluationSnapshotRepository,
@@ -77,7 +81,7 @@ from app.platform.events.dispatcher import EventDispatcher
 
 
 class RegisterTradeResult:
-    def __init__(self, trade: Trade, evaluation: EvaluationSnapshot) -> None:
+    def __init__(self, trade: Trade, evaluation: EvaluationSnapshot | None) -> None:
         self.trade = trade
         self.evaluation = evaluation
 
@@ -109,13 +113,19 @@ class RegisterTradeUseCase:
         user_id: uuid.UUID,
         market: str,
         direction: str,
-        entry_price: float,
-        stop_loss: float,
-        scoring_profile: str,
+        status: str,
+        scoring_profile: str | None = None,
+        entry_price: float | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+        entered_at: datetime | None = None,
         exit_price: float | None = None,
+        result: str | None = None,
+        closed_at: datetime | None = None,
+        realized_pnl: float = 0,
         size: float = 0,
+        margin_used: float | None = None,
         leverage: str = "",
-        result: str = OPEN,
         strategy_id: uuid.UUID | None = None,
         setup_id: uuid.UUID | None = None,
         session_id: uuid.UUID | None = None,
@@ -130,52 +140,66 @@ class RegisterTradeUseCase:
         await self._validate_catalog_reference("session_id", session_id)
         await self._validate_catalog_reference("entry_trigger_id", entry_trigger_id)
 
-        closed_at = (
-            datetime.now(timezone.utc) if result != OPEN and exit_price is not None else None
-        )
-
         trade = Trade(
             user_id=user_id,
             market=market,
             direction=direction,
+            status=status,
             entry_price=entry_price,
             stop_loss=stop_loss,
+            take_profit=take_profit,
             strategy_id=strategy_id,
             setup_id=setup_id,
             session_id=session_id,
             entry_trigger_id=entry_trigger_id,
             exit_price=exit_price,
             size=size,
+            margin_used=margin_used,
             leverage=leverage,
             result=result,
+            realized_pnl=realized_pnl,
             mfe_price=mfe_price,
             mae_price=mae_price,
             notes=notes,
+            entered_at=entered_at,
             closed_at=closed_at,
             created_by_user_id=user_id,
         )
 
-        answers = checklist_answers or {}
+        evaluation_snapshot: EvaluationSnapshot | None = None
+        checklist_snapshot: ChecklistSnapshot | None = None
+        configuration_version_id: uuid.UUID | None = None
 
-        configuration_version = await self._get_configuration_version.execute()
-        if configuration_version is None:
-            raise UnprocessableEntityError(
-                "No configuration version is available to evaluate against."
+        # DI-13: a Planned Trade has no Checklist/Evaluation yet by
+        # definition -- Evaluation runs here for every other status, and
+        # is deferred to `OpenTradeUseCase` for a Trade that started
+        # Planned (API Specification §6.4).
+        if status != PLANNED:
+            if scoring_profile is None:
+                raise UnprocessableEntityError(
+                    "'scoring_profile' is required once status is not 'planned'."
+                )
+            answers = checklist_answers or {}
+
+            configuration_version = await self._get_configuration_version.execute()
+            if configuration_version is None:
+                raise UnprocessableEntityError(
+                    "No configuration version is available to evaluate against."
+                )
+            configuration_version_id = configuration_version.id
+
+            evaluation_result = await self._preview_evaluation.execute(
+                checklist_answers=answers,
+                scoring_profile=scoring_profile,
+                configuration_version_id=configuration_version.id,
             )
 
-        evaluation_result = await self._preview_evaluation.execute(
-            checklist_answers=answers,
-            scoring_profile=scoring_profile,
-            configuration_version_id=configuration_version.id,
-        )
-
-        evaluation_snapshot = build_evaluation_snapshot(
-            trade_id=trade.id,
-            configuration_version_id=configuration_version.id,
-            evaluation_result=evaluation_result,
-        )
-
-        checklist_snapshot = ChecklistSnapshot(trade_id=trade.id, answers=answers)
+            evaluation_snapshot = build_evaluation_snapshot(
+                trade_id=trade.id,
+                configuration_version_id=configuration_version.id,
+                evaluation_result=evaluation_result,
+            )
+            checklist_snapshot = ChecklistSnapshot(trade_id=trade.id, answers=answers)
 
         await self._trades.add(trade)
         # Flushed before the two children below are even added: no
@@ -187,8 +211,10 @@ class RegisterTradeUseCase:
         # `EvaluationSnapshotRepository.add()`'s own flush for the exact
         # same reason.
         await self._session.flush()
-        await self._checklist_snapshots.add(checklist_snapshot)
-        await self._evaluation_snapshots.add(evaluation_snapshot)
+        if checklist_snapshot is not None:
+            await self._checklist_snapshots.add(checklist_snapshot)
+        if evaluation_snapshot is not None:
+            await self._evaluation_snapshots.add(evaluation_snapshot)
 
         await self._dispatcher.publish(
             DomainEvent(
@@ -198,20 +224,21 @@ class RegisterTradeUseCase:
                 payload={
                     "market": trade.market,
                     "direction": trade.direction,
-                    "result": trade.result,
+                    "status": trade.status,
                 },
             ),
             self._session,
         )
-        await self._dispatcher.publish(
-            DomainEvent(
-                event_type="TradeEvaluated",
-                aggregate_type="Trade",
-                aggregate_id=trade.id,
-                payload={"configuration_version_id": str(configuration_version.id)},
-            ),
-            self._session,
-        )
+        if evaluation_snapshot is not None:
+            await self._dispatcher.publish(
+                DomainEvent(
+                    event_type="TradeEvaluated",
+                    aggregate_type="Trade",
+                    aggregate_id=trade.id,
+                    payload={"configuration_version_id": str(configuration_version_id)},
+                ),
+                self._session,
+            )
 
         return RegisterTradeResult(trade=trade, evaluation=evaluation_snapshot)
 

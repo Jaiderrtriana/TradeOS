@@ -89,19 +89,51 @@ export function CloseTradeModal({
           {errors.result && <p className="mt-1 text-xs text-danger">{errors.result.message}</p>}
         </div>
 
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label htmlFor="close-exit-price" className="mb-1 block text-sm text-text-secondary">
+              Exit Price
+            </label>
+            <input
+              id="close-exit-price"
+              type="number"
+              step="any"
+              className="w-full rounded border border-border bg-bg-base px-3 py-2 text-sm text-text-primary"
+              {...register("exit_price")}
+            />
+            {errors.exit_price && (
+              <p className="mt-1 text-xs text-danger">{errors.exit_price.message}</p>
+            )}
+          </div>
+          <div>
+            <label htmlFor="close-realized-pnl" className="mb-1 block text-sm text-text-secondary">
+              Realized P&amp;L
+            </label>
+            <input
+              id="close-realized-pnl"
+              type="number"
+              step="any"
+              className="w-full rounded border border-border bg-bg-base px-3 py-2 text-sm text-text-primary"
+              {...register("realized_pnl")}
+            />
+            {errors.realized_pnl && (
+              <p className="mt-1 text-xs text-danger">{errors.realized_pnl.message}</p>
+            )}
+          </div>
+        </div>
+
         <div>
-          <label htmlFor="close-exit-price" className="mb-1 block text-sm text-text-secondary">
-            Exit Price
+          <label htmlFor="close-closed-at" className="mb-1 block text-sm text-text-secondary">
+            Close Date
           </label>
           <input
-            id="close-exit-price"
-            type="number"
-            step="any"
+            id="close-closed-at"
+            type="date"
             className="w-full rounded border border-border bg-bg-base px-3 py-2 text-sm text-text-primary"
-            {...register("exit_price")}
+            {...register("closed_at")}
           />
-          {errors.exit_price && (
-            <p className="mt-1 text-xs text-danger">{errors.exit_price.message}</p>
+          {errors.closed_at && (
+            <p className="mt-1 text-xs text-danger">{errors.closed_at.message}</p>
           )}
         </div>
 

@@ -66,8 +66,10 @@ async function createAndCloseTradeForSetup(
     data: {
       market: "EURUSD",
       direction: "long",
+      status: "open",
       entry_price: 100,
       stop_loss: 95,
+      entered_at: "2026-01-01T00:00:00Z",
       scoring_profile: "day_trading",
       setup_id: catalogEntryId,
     },
@@ -79,7 +81,15 @@ async function createAndCloseTradeForSetup(
 
   const closeResponse = await page.request.post(
     `http://localhost:8000/api/v1/trades/${trade.id}/close`,
-    { headers, data: { result: "tp", exit_price: 110 } },
+    {
+      headers,
+      data: {
+        result: "tp",
+        exit_price: 110,
+        realized_pnl: 100,
+        closed_at: "2026-01-02T00:00:00Z",
+      },
+    },
   );
   if (!closeResponse.ok()) {
     throw new Error(`Failed to close trade: ${closeResponse.status()}`);

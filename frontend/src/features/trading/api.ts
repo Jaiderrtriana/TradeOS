@@ -5,6 +5,7 @@ import type {
   EvaluationHistoryEntry,
   EvaluationSnapshot,
   ListTradesFilters,
+  OpenTradePayload,
   PaginatedTrades,
   RegisterTradePayload,
   ReevaluateTradePayload,
@@ -53,6 +54,12 @@ export function getTradeEvaluationHistory(tradeId: string): Promise<EvaluationHi
 
 export function amendTrade(tradeId: string, payload: AmendTradePayload): Promise<Trade> {
   return apiRequest<Trade>(`/trades/${tradeId}`, { method: "PATCH", body: payload });
+}
+
+/** `POST /trades/{id}/open` (new in v2.0) — transitions a `Planned` Trade
+ * to `Open`, triggering Evaluation for the first time. */
+export function openTrade(tradeId: string, payload: OpenTradePayload): Promise<Trade> {
+  return apiRequest<Trade>(`/trades/${tradeId}/open`, { method: "POST", body: payload });
 }
 
 export function closeTrade(tradeId: string, payload: CloseTradePayload): Promise<Trade> {

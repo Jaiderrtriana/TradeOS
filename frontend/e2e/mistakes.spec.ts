@@ -39,10 +39,11 @@ async function createAndCloseTrade(
   await modal.getByLabel("Market").fill(market);
   await modal.getByLabel("Direction").click();
   await page.getByRole("option", { name: "Long" }).click();
-  await modal.getByLabel("Scoring Profile").click();
+  await modal.getByLabel("Trade Type").click();
   await page.getByRole("option").first().click();
   await modal.getByLabel("Entry Price").fill("100");
   await modal.getByLabel("Stop Loss").fill("95");
+  await modal.getByLabel("Entry Date").fill("2026-01-01");
   await modal.getByRole("button", { name: "Save Trade" }).click();
   await expect(page).toHaveURL(/\/trades\/[0-9a-f-]+$/);
 
@@ -51,6 +52,8 @@ async function createAndCloseTrade(
   await closeModal.getByLabel("Result").click();
   await page.getByRole("option", { name: result }).click();
   await closeModal.getByLabel("Exit Price").fill(exitPrice);
+  await closeModal.getByLabel("Realized P&L").fill("0");
+  await closeModal.getByLabel("Close Date").fill("2026-01-02");
   await closeModal.getByRole("button", { name: "Close Trade" }).click();
   await expect(page.getByText(result === "Take Profit" ? "TP" : "SL")).toBeVisible();
 }

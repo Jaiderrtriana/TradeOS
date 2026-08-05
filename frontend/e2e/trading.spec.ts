@@ -52,10 +52,13 @@ async function createTradeSimple(page: import("@playwright/test").Page, market: 
   await modal.getByLabel("Market").fill(market);
   await modal.getByLabel("Direction").click();
   await page.getByRole("option", { name: "Long" }).click();
-  await modal.getByLabel("Scoring Profile").click();
+  // Trade Status defaults to "Open" (useTradeEntryForm's v2.0 default) --
+  // no interaction needed unless a test wants Planned/Closed explicitly.
+  await modal.getByLabel("Trade Type").click();
   await page.getByRole("option").first().click();
   await modal.getByLabel("Entry Price").fill("100");
   await modal.getByLabel("Stop Loss").fill("95");
+  await modal.getByLabel("Entry Date").fill("2026-01-01");
 
   await modal.getByRole("button", { name: "Save Trade" }).click();
   await expect(page).toHaveURL(/\/trades\/[0-9a-f-]+$/);
@@ -91,6 +94,8 @@ test("golden path: create, tag a mistake, close, re-evaluate, view the Rule Expl
   await closeModal.getByLabel("Result").click();
   await page.getByRole("option", { name: "Take Profit" }).click();
   await closeModal.getByLabel("Exit Price").fill("110");
+  await closeModal.getByLabel("Realized P&L").fill("100");
+  await closeModal.getByLabel("Close Date").fill("2026-01-02");
   await closeModal.getByRole("button", { name: "Close Trade" }).click();
   await expect(page.getByText("TP")).toBeVisible();
   // Close is no longer offered once the trade is no longer open.
@@ -128,6 +133,81 @@ test("Trades List shows a created trade and navigates to its detail on click", a
   const row = page.getByRole("row", { name: new RegExp(market) });
   await expect(row).toBeVisible();
   await row.click();
+  await expect(page).toHaveURL(/\/trades\/[0-9a-f-]+$/);
+  await expect(page.getByRole("heading", { name: market })).toBeVisible();
+});
+
+test("Planned trade has no Evaluation until opened, then Open runs it for the first time", async ({
+  page,
+}) => {
+  await registerAndLogIn(page);
+  const market = `PL${Date.now()}`;
+
+  await page.goto("/trades");
+  await page.getByRole("button", { name: "+ New Trade" }).click();
+  const modal = page.getByRole("dialog");
+  await expect(modal.getByRole("heading", { name: "New Trade" })).toBeVisible();
+
+  await modal.getByLabel("Market").fill(market);
+  await modal.getByLabel("Direction").click();
+  await page.getByRole("option", { name: "Long" }).click();
+  await modal.getByLabel("Trade Status").click();
+  await page.getByRole("option", { name: "Planned" }).click();
+  // Trade Type/Entry Price/Stop Loss/Entry Date are all hidden while
+  // Planned -- nothing else to fill in.
+  await modal.getByRole("button", { name: "Save Trade" }).click();
+  await expect(page).toHaveURL(/\/trades\/[0-9a-f-]+$/);
+
+  await expect(page.getByRole("heading", { name: market })).toBeVisible();
+  await expect(page.getByText("PLANNED", { exact: true })).toBeVisible();
+  await expect(page.getByText("still Planned")).toBeVisible();
+  // Only Amend/Open/Delete are offered for a Planned trade -- no Close,
+  // no Re-evaluate (Domain Invariant DI-13: no Evaluation exists yet).
+  await expect(page.getByRole("button", { name: "Close", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Re-evaluate" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  const openModal = page.getByRole("dialog");
+  await expect(openModal.getByRole("heading", { name: "Open Trade" })).toBeVisible();
+  await openModal.getByLabel("Trade Type").click();
+  await page.getByRole("option").first().click();
+  await openModal.getByLabel("Entry Price").fill("100");
+  await openModal.getByLabel("Stop Loss").fill("95");
+  await openModal.getByLabel("Entry Date").fill("2026-01-01");
+  await openModal.getByRole("button", { name: "Open Trade" }).click();
+
+  await expect(page.getByText("OPEN", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("score-ring-confidence")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Close", exact: true })).toBeVisible();
+});
+
+test("submitting without a Trade Type prompts the just-in-time TradeTypeDialog", async ({
+  page,
+}) => {
+  await registerAndLogIn(page);
+  const market = `TT${Date.now()}`;
+
+  await page.goto("/trades");
+  await page.getByRole("button", { name: "+ New Trade" }).click();
+  const modal = page.getByRole("dialog");
+  await expect(modal.getByRole("heading", { name: "New Trade" })).toBeVisible();
+
+  await modal.getByLabel("Market").fill(market);
+  await modal.getByLabel("Direction").click();
+  await page.getByRole("option", { name: "Long" }).click();
+  // Trade Type deliberately left empty.
+  await modal.getByLabel("Entry Price").fill("100");
+  await modal.getByLabel("Stop Loss").fill("95");
+  await modal.getByLabel("Entry Date").fill("2026-01-01");
+
+  await modal.getByRole("button", { name: "Save Trade" }).click();
+
+  const typeDialog = page.getByRole("dialog").filter({ hasText: "Select a Trade Type" });
+  await expect(typeDialog.getByRole("heading", { name: "Select a Trade Type" })).toBeVisible();
+  await typeDialog.getByLabel("Trade Type").click();
+  await page.getByRole("option").first().click();
+  await typeDialog.getByRole("button", { name: "Continue" }).click();
+
   await expect(page).toHaveURL(/\/trades\/[0-9a-f-]+$/);
   await expect(page.getByRole("heading", { name: market })).toBeVisible();
 });

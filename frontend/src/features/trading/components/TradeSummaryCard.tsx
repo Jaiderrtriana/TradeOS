@@ -1,8 +1,13 @@
 import { Badge, type BadgeTone } from "../../../components/Badge";
 import type { TradeDetail } from "../types";
 
+const STATUS_TONE: Record<string, BadgeTone> = {
+  planned: "neutral",
+  open: "accent",
+  closed: "muted",
+};
+
 const RESULT_TONE: Record<string, BadgeTone> = {
-  open: "neutral",
   tp: "accent",
   sl: "muted",
   be: "neutral",
@@ -30,14 +35,19 @@ export function TradeSummaryCard({ trade }: { trade: TradeDetail }) {
       <div className="flex items-center gap-3">
         <h2 className="text-base font-semibold text-text-primary">{trade.market}</h2>
         <Badge label={trade.direction === "long" ? "Long" : "Short"} tone={trade.direction === "long" ? "accent" : "muted"} />
-        <Badge label={trade.result.toUpperCase()} tone={RESULT_TONE[trade.result] ?? "neutral"} />
+        <Badge label={trade.status.toUpperCase()} tone={STATUS_TONE[trade.status] ?? "neutral"} />
+        {trade.result !== null && (
+          <Badge label={trade.result.toUpperCase()} tone={RESULT_TONE[trade.result] ?? "neutral"} />
+        )}
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
-        {field("Entry Price", String(trade.entry_price))}
+        {field("Entry Price", trade.entry_price !== null ? String(trade.entry_price) : "—")}
         {field("Exit Price", trade.exit_price !== null ? String(trade.exit_price) : "—")}
-        {field("Stop Loss", String(trade.stop_loss))}
+        {field("Stop Loss", trade.stop_loss !== null ? String(trade.stop_loss) : "—")}
+        {field("Take Profit", trade.take_profit !== null ? String(trade.take_profit) : "—")}
         {field("Size", String(trade.size))}
+        {field("Margin Used", trade.margin_used !== null ? String(trade.margin_used) : "—")}
         {field("Leverage", trade.leverage || "—")}
         {field("R-Multiple", trade.r_multiple !== null ? trade.r_multiple.toFixed(2) : "—")}
         {field("MFE (R)", trade.mfe_r !== null ? trade.mfe_r.toFixed(2) : "—")}
@@ -48,7 +58,9 @@ export function TradeSummaryCard({ trade }: { trade: TradeDetail }) {
           trade.potential_left_r !== null ? trade.potential_left_r.toFixed(2) : "—",
         )}
         {field("Realized P&L", String(trade.realized_pnl))}
-        {field("Entered At", new Date(trade.entered_at).toLocaleString())}
+        {field("ROI %", trade.roi_percent !== null ? `${(trade.roi_percent * 100).toFixed(1)}%` : "—")}
+        {field("P&L %", trade.pnl_percent !== null ? `${(trade.pnl_percent * 100).toFixed(1)}%` : "—")}
+        {field("Entered At", trade.entered_at ? new Date(trade.entered_at).toLocaleString() : "—")}
         {field("Closed At", trade.closed_at ? new Date(trade.closed_at).toLocaleString() : "—")}
       </div>
 

@@ -26,7 +26,7 @@ from app.modules.trading.domain.evaluation_snapshot import (
     EvaluationSnapshot,
     EvaluationSnapshotBreakdown,
 )
-from app.modules.trading.domain.trade import Trade
+from app.modules.trading.domain.trade import PLANNED, Trade
 from app.modules.trading.domain.trade_mistake import TradeMistake
 from app.modules.trading.infrastructure.models import (
     ChecklistSnapshotModel,
@@ -52,10 +52,13 @@ class TradeRepository:
                 entry_trigger_id=trade.entry_trigger_id,
                 market=trade.market,
                 direction=trade.direction,
+                status=trade.status,
                 entry_price=trade.entry_price,
                 stop_loss=trade.stop_loss,
+                take_profit=trade.take_profit,
                 exit_price=trade.exit_price,
                 size=trade.size,
+                margin_used=trade.margin_used,
                 leverage=trade.leverage,
                 result=trade.result,
                 realized_pnl=trade.realized_pnl,
@@ -104,16 +107,20 @@ class TradeRepository:
         row.entry_trigger_id = trade.entry_trigger_id
         row.market = trade.market
         row.direction = trade.direction
+        row.status = trade.status
         row.entry_price = trade.entry_price
         row.stop_loss = trade.stop_loss
+        row.take_profit = trade.take_profit
         row.exit_price = trade.exit_price
         row.size = trade.size
+        row.margin_used = trade.margin_used
         row.leverage = trade.leverage
         row.result = trade.result
         row.realized_pnl = trade.realized_pnl
         row.mfe_price = trade.mfe_price
         row.mae_price = trade.mae_price
         row.notes = trade.notes
+        row.entered_at = trade.entered_at
         row.closed_at = trade.closed_at
         row.updated_at = trade.updated_at
         row.deleted_at = trade.deleted_at
@@ -123,6 +130,7 @@ class TradeRepository:
         *,
         user_id: uuid.UUID,
         direction: str | None = None,
+        status: str | None = None,
         result: str | None = None,
         entered_after: datetime | None = None,
         entered_before: datetime | None = None,
@@ -154,6 +162,8 @@ class TradeRepository:
         )
         if direction is not None:
             query = query.where(TradeModel.direction == direction)
+        if status is not None:
+            query = query.where(TradeModel.status == status)
         if result is not None:
             query = query.where(TradeModel.result == result)
         if entered_after is not None:
@@ -217,7 +227,12 @@ class TradeRepository:
         select "the most recent N Trades" (`TRADEOS_DOMAIN_MODEL.md`
         §2.3) without a second query -- the same already-indexed column
         `list_all` above orders by (`TRADEOS_DATABASE_DESIGN.md` §6.9's
-        "Analytics' time-based queries" index)."""
+        "Analytics' time-based queries" index).
+
+        v2.0 (Domain Model DI-13): `status = 'planned'` rows are excluded
+        at the query itself, not filtered later by the caller -- a
+        Planned Trade must never enter *any* Statistics metric, including
+        a future "Total Trades" count."""
         result = await self._session.execute(
             select(
                 TradeModel.id,
@@ -231,7 +246,11 @@ class TradeRepository:
                 TradeModel.setup_id,
                 TradeModel.session_id,
                 TradeModel.entered_at,
-            ).where(TradeModel.user_id == user_id, TradeModel.deleted_at.is_(None))
+            ).where(
+                TradeModel.user_id == user_id,
+                TradeModel.deleted_at.is_(None),
+                TradeModel.status != PLANNED,
+            )
         )
         return [
             TradeStatisticsFact(
@@ -269,11 +288,17 @@ class TradeStatisticsFact:
     reasoning as `MistakeTradeFact` (Sprint 5.2): a query-result shape,
     not a domain concept. `trading/application/list_trade_statistics_
     facts.py` enriches it with `r_multiple` and Evaluation scores before
-    handing it to Statistics' own domain layer."""
+    handing it to Statistics' own domain layer.
+
+    v2.0: `result` is `None` for an `Open` Trade (`'open'` retired as a
+    result value) -- `Planned` Trades never reach this dataclass at all
+    (excluded at the query in `list_all_facts_for_statistics` above), so
+    every row here is either `Open` (`result is None`) or `Closed`
+    (`result` is `tp`/`sl`/`be`)."""
 
     id: uuid.UUID
     direction: str
-    result: str
+    result: str | None
     realized_pnl: float
     entry_price: float
     stop_loss: float
@@ -656,10 +681,13 @@ def _trade_to_domain(row: TradeModel) -> Trade:
         entry_trigger_id=row.entry_trigger_id,
         market=row.market,
         direction=row.direction,
-        entry_price=_as_float(row.entry_price),
-        stop_loss=_as_float(row.stop_loss),
+        status=row.status,
+        entry_price=_as_optional_float(row.entry_price),
+        stop_loss=_as_optional_float(row.stop_loss),
+        take_profit=_as_optional_float(row.take_profit),
         exit_price=_as_optional_float(row.exit_price),
         size=_as_float(row.size),
+        margin_used=_as_optional_float(row.margin_used),
         leverage=row.leverage,
         result=row.result,
         realized_pnl=_as_float(row.realized_pnl),

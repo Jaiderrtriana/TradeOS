@@ -31,10 +31,11 @@ async function createTradeSimple(page: import("@playwright/test").Page, market: 
   await modal.getByLabel("Market").fill(market);
   await modal.getByLabel("Direction").click();
   await page.getByRole("option", { name: "Long" }).click();
-  await modal.getByLabel("Scoring Profile").click();
+  await modal.getByLabel("Trade Type").click();
   await page.getByRole("option").first().click();
   await modal.getByLabel("Entry Price").fill("100");
   await modal.getByLabel("Stop Loss").fill("95");
+  await modal.getByLabel("Entry Date").fill("2026-01-01");
 
   await modal.getByRole("button", { name: "Save Trade" }).click();
   await expect(page).toHaveURL(/\/trades\/[0-9a-f-]+$/);

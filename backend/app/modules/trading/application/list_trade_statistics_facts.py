@@ -27,6 +27,10 @@ every one of those Trades' current Evaluation Snapshot.
 needs it to select "the most recent N Trades" (`TRADEOS_DOMAIN_MODEL.md`
 §2.3); Overview/By-Dimension simply ignore the field, same as they
 already ignore `id`.
+
+v2.0 (Domain Invariant DI-13): `list_all_facts_for_statistics` already
+excludes `status = planned` Trades at the query itself, so every
+`TradeStatisticsRecord` here is `Open` or `Closed` -- never `Planned`.
 """
 
 import uuid
@@ -46,7 +50,7 @@ from app.modules.trading.infrastructure.repository import (
 class TradeStatisticsRecord:
     id: uuid.UUID
     direction: str
-    result: str
+    result: str | None
     realized_pnl: float
     r_multiple: float | None
     strategy_id: uuid.UUID | None

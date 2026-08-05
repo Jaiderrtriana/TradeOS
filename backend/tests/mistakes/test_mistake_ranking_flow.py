@@ -66,8 +66,10 @@ async def _register_trade(
     payload = {
         "market": "EURUSD",
         "direction": "long",
+        "status": "open",
         "entry_price": entry_price,
         "stop_loss": stop_loss,
+        "entered_at": "2026-01-01T00:00:00Z",
         "scoring_profile": PROFILE,
     }
     response = await client.post("/api/v1/trades", json=payload, headers=headers)
@@ -78,7 +80,12 @@ async def _register_trade(
 async def _close_trade(client, headers, trade_id: str, *, result: str, exit_price: float) -> None:
     response = await client.post(
         f"/api/v1/trades/{trade_id}/close",
-        json={"result": result, "exit_price": exit_price},
+        json={
+            "result": result,
+            "exit_price": exit_price,
+            "realized_pnl": 0.0,
+            "closed_at": "2026-01-02T00:00:00Z",
+        },
         headers=headers,
     )
     assert response.status_code == 200, response.text

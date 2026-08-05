@@ -80,8 +80,10 @@ async def _register_trade(client, headers, suffix: str) -> dict:
     payload = {
         "market": "EURUSD",
         "direction": "long",
+        "status": "open",
         "entry_price": 100.0,
         "stop_loss": 95.0,
+        "entered_at": "2026-01-01T00:00:00Z",
         "scoring_profile": PROFILE,
         "checklist_answers": {
             criteria["confidence"][1]: "Yes",

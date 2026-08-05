@@ -10,8 +10,13 @@ import { TradeEntryModal } from "../components/TradeEntryModal";
 import { tradingKeys } from "../queryKeys";
 import type { ListTradesFilters, TradeSummary } from "../types";
 
+const STATUS_TONE: Record<string, BadgeTone> = {
+  planned: "neutral",
+  open: "accent",
+  closed: "muted",
+};
+
 const RESULT_TONE: Record<string, BadgeTone> = {
-  open: "neutral",
   tp: "accent",
   sl: "muted",
   be: "neutral",
@@ -87,20 +92,33 @@ export function TradesListPage() {
                 ),
               },
               {
-                id: "result",
-                header: "Result",
+                id: "status",
+                header: "Status",
                 cell: ({ row }) => (
                   <Badge
-                    label={row.original.result.toUpperCase()}
-                    tone={RESULT_TONE[row.original.result] ?? "neutral"}
+                    label={row.original.status.toUpperCase()}
+                    tone={STATUS_TONE[row.original.status] ?? "neutral"}
                   />
                 ),
+              },
+              {
+                id: "result",
+                header: "Result",
+                cell: ({ row }) =>
+                  row.original.result !== null ? (
+                    <Badge
+                      label={row.original.result.toUpperCase()}
+                      tone={RESULT_TONE[row.original.result] ?? "neutral"}
+                    />
+                  ) : (
+                    "—"
+                  ),
               },
               {
                 id: "entry_exit",
                 header: "Entry / Exit",
                 cell: ({ row }) =>
-                  `${row.original.entry_price} → ${row.original.exit_price ?? "—"}`,
+                  `${row.original.entry_price ?? "—"} → ${row.original.exit_price ?? "—"}`,
               },
               {
                 id: "r_multiple",
@@ -111,7 +129,7 @@ export function TradesListPage() {
               {
                 id: "confidence_grade",
                 header: "Confidence Grade",
-                cell: ({ row }) => row.original.evaluation.confidence.grade ?? "—",
+                cell: ({ row }) => row.original.evaluation?.confidence.grade ?? "—",
               },
             ]}
           />

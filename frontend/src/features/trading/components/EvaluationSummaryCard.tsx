@@ -8,14 +8,31 @@ import type { EvaluationSnapshot } from "../types";
  * a "View full breakdown" link into the Rule Explorer (§5.4) — the
  * per-criterion breakdown table itself is explicitly that page's job,
  * not this card's.
+ *
+ * v2.0 (Domain Invariant DI-13): `evaluation` is `null` for a `Planned`
+ * Trade — no Evaluation exists yet, since Evaluation only runs once the
+ * Trade transitions to `Open` (`POST /trades/{id}/open`) or is registered
+ * directly as `Open`/`Closed`.
  */
 export function EvaluationSummaryCard({
   tradeId,
   evaluation,
 }: {
   tradeId: string;
-  evaluation: EvaluationSnapshot;
+  evaluation: EvaluationSnapshot | null;
 }) {
+  if (evaluation === null) {
+    return (
+      <div className="rounded border border-border bg-bg-surface p-4">
+        <h2 className="text-base font-semibold text-text-primary">Evaluation</h2>
+        <p className="mt-2 text-sm text-text-secondary">
+          This trade is still Planned — it has no Evaluation yet. Opening it will run the first
+          Evaluation.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded border border-border bg-bg-surface p-4">
       <div className="flex items-center justify-between">

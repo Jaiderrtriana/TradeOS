@@ -25,8 +25,13 @@ export function useTradeEntryForm() {
     defaultValues: {
       market: "",
       direction: undefined,
+      // "open" (v2.0 default) -- the most common case (logging a trade
+      // already in the market), least disruptive to the pre-v2.0 flow.
+      // "planned"/"closed" are explicit opt-ins via the Trade Status field.
+      status: "open",
       entry_price: undefined,
       stop_loss: undefined,
+      entered_at: "",
       scoring_profile: "",
     },
   });

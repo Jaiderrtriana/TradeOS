@@ -1,8 +1,8 @@
 # TRADEOS_DOMAIN_MODEL.md
 
 **Document Status:** CANONICAL AND FROZEN — the permanent business domain model of TradeOS.
-**Version:** 1.1
-**Last Updated:** 2026-07-24
+**Version:** 2.0
+**Last Updated:** 2026-07-30
 **Depends On:** `TRADEOS_PRODUCT_BIBLE.md` v2.1 (frozen) — this document takes that one's product intent as given and models the business domain that implements it.
 **Does Not Cover:** database schemas, tables, indexes, or storage technology. That is the subject of a separate document to be written after this one, per Section 20.
 **Methodology:** Domain-Driven Design (DDD) — strategic design (bounded contexts, core/supporting/generic domain classification) followed by tactical design (aggregates, entities, value objects, domain events, invariants).
@@ -25,9 +25,10 @@ This is the official vocabulary of TradeOS. Every future document — technical 
 
 | Term | Definition |
 |---|---|
-| **Trade** | One discretionary trading decision, from entry to (eventually) close. The aggregate root of the Trading Context. |
+| **Trade** | One discretionary trading decision, from an optional planning stage through entry to (eventually) close. The aggregate root of the Trading Context. |
+| **TradeStatus** | *(v2.0)* The lifecycle stage of a Trade, independent of its financial outcome: `Planned`, `Open`, `Closed`. Replaces the pre-v2.0 conflation of lifecycle stage and outcome inside `TradeResult`. Traced to `Trading_Journal_v2_0_Stable.xlsx`'s `📒 Trades`/`📒 Trades simple` sheets, column `Estado` (`No iniciado`/`Activo`/`Cerrado`) — present in both sheets, confirmed by direct inspection of the workbook's own data-validation lists. |
 | **Direction** | Whether a Trade is `Long` or `Short`. |
-| **TradeResult** | The terminal (or non-terminal) state of a Trade: `Open`, `TP`, `SL`, `BE`. |
+| **TradeResult** | *(redefined, v2.0)* The terminal outcome of a Closed Trade only: `TP`, `SL`, `BE`. `null` for a Trade whose `TradeStatus` is `Planned` or `Open` — a Trade with no result yet is not "open" *as a result*, it simply has none. Traced to the same Excel sheets' `Resultado` column (`TP`/`BE`/`SL`). |
 | **R-Multiple** | A trade's outcome expressed as a multiple of its initial risk (1R). Always computed, never stored as an independent fact. |
 | **MFE (Maximum Favorable Excursion)** | The furthest a Trade moved in the trader's favor before it closed, expressed in R. |
 | **MAE (Maximum Adverse Excursion)** | The furthest a Trade moved against the trader before it closed, expressed in R. |
@@ -251,6 +252,13 @@ This section explains the reasoning behind the modeling choices most likely to b
 **Reasoning:** consistent with the Product Bible's own posture of marking open questions rather than inventing answers (Product Bible Section 15, Open Question 6).
 **Consequences:** this is the one place in this document where "the model" and "the current implementation" are known to diverge — any future document must not assume they already match.
 
+### KDD-07 *(added v2.0)*: TradeStatus is independent of TradeResult; ROI %/P&L % are never stored
+**Context:** `Trading_Journal_v2_0_Stable.xlsx`'s `📒 Trades` and `📒 Trades simple` sheets both carry an `Estado` column with three data-validated values — `No iniciado`, `Activo`, `Cerrado` — distinct from the `Resultado` column (`TP`/`BE`/`SL`). Confirmed by direct cell-level inspection (data validation lists, both sheets) as part of a Trade Entry redesign review. v1.1 of this document, formalized primarily from the Product Bible and a general reading of the Excel, collapsed both concepts into one `TradeResult` enum (`Open`/`TP`/`SL`/`BE`), never separately naming the "not yet executed" planning stage the Excel already supported. The same review also found `TP` (Take Profit) and `Margin` — present in both sheets, distinct from `Entry Price`/`Stop Loss` and from `Size` respectively — were never captured as owned Trade information in v1.1.
+**Decision:** `TradeStatus` (`Planned`/`Open`/`Closed`) is introduced as a first-class concept, independent of `TradeResult`. `TakeProfit` and `MarginUsed` are added as owned Trade information (Section 8.1). Storing `ROI %` or `P&L %` as independent facts is explicitly rejected, even though the Excel's own `Trades simple` sheet stores `ROI` as a raw, trader-entered number (verified: not a formula) — both remain fully derivable (`ROI = realized_pnl / margin_used`; `P&L % = ROI / leverage`, the Excel's own literal formula) from facts already owned. `realized_pnl` itself is the one exception: the Excel enters it as a raw number too, but unlike `ROI` it is **not** derivable from any other fact this Trade owns (position size, leverage, and exchange fees/funding are never fully captured), so it remains an owned fact, never computed.
+**Alternatives considered:** a fourth `TradeResult` value (`planned`) instead of a separate `TradeStatus` — rejected because it would keep mixing "what stage is this Trade at" with "what was its financial outcome," the exact conflation this decision exists to undo, and because the Excel itself keeps `Estado` and `Resultado` as two separate columns, not one.
+**Reasoning:** direct evidence from the project's own declared source of truth (`PROJECT_AUDIT.md`'s and Section 1's own framing of the Excel as what this document is derived from) outranks a prior modeling simplification once the two are found to disagree — Section 20's own versioning process requires exactly this document to be revised first when an implementation-adjacent review reveals a concept was modeled incorrectly, never the reverse.
+**Consequences:** every downstream document (Database Design, API Specification, Backend/Frontend Blueprints) that assumed `TradeResult` included `Open` must be revised in the same effort (see Section 20's own mandate for a MAJOR change) — tracked as this document's v2.0 revision, Section 21.
+
 ---
 
 ## 7. Aggregate Roots
@@ -278,19 +286,21 @@ For each entity: purpose, responsibilities, owned information, lifecycle, relati
 
 ### 8.1 Trade — *(Aggregate Root, Trading Context; Core Domain consumer)*
 
-**Purpose:** the single record of one discretionary trading decision, from entry to (eventually) close.
+**Purpose:** the single record of one discretionary trading decision, from an optional planning stage, through entry, to (eventually) close.
 
-**Responsibilities:** hold the ground-truth facts of what happened; enforce the invariants that make those facts internally consistent; expose the computed properties (R-multiple, MFE/MAE in R, Captured %, Potential Left) derived from its own facts, without ever storing them as independent facts.
+**Responsibilities:** hold the ground-truth facts of what happened; enforce the invariants that make those facts internally consistent; expose the computed properties (R-multiple, MFE/MAE in R, Captured %, Potential Left, ROI %, P&L %) derived from its own facts, without ever storing them as independent facts.
 
-**Owned Information:** market/instrument, direction, entry price, stop loss, exit price (once closed), size, leverage, result (Open/TP/SL/BE), realized P&L, timestamps (entered/closed), free-text notes, references to Strategy/Setup/Session/EntryTrigger (by identity, not by copy), its `EvaluationSnapshot`, its `ChecklistSnapshot`, its tagged Mistakes, and the MFE/MAE raw prices (the favorable/adverse extremes reached).
+**Owned Information:** market/instrument, direction, `status` (`Planned`/`Open`/`Closed`), entry price (present once `status != Planned`), stop loss, take profit, exit price (once Closed), size, margin used, leverage, `result` (`TP`/`SL`/`BE`, present only once Closed — `null` otherwise), realized P&L (a trader-supplied fact, sourced from the exchange, never derived — see Key Domain Decision below), timestamps (entered/closed — `entered_at` present once `status != Planned`), free-text notes, references to Strategy/Setup/Session/EntryTrigger (by identity, not by copy), its `EvaluationSnapshot` (present only once `status != Planned` — see Lifecycle), its `ChecklistSnapshot`, its tagged Mistakes, and the MFE/MAE raw prices (the favorable/adverse extremes reached).
 
-**Lifecycle:** `Open → Closed (TP | SL | BE)`. A Trade may be amended while Open (price/size corrections) and amendments to a Closed trade should be tracked as a distinct event rather than silently overwriting history — see `TradeAmended` in Section 11.
+**Lifecycle *(v2.0 — see Key Domain Decision KDD-07 below)*:** `Planned → Open → Closed (TP | SL | BE)`. `Planned` represents an idea or setup the trader intends to take but has not yet executed — no entry price, no entry timestamp, no Evaluation. `Open` requires an entry price and an entry timestamp; transitioning into it (whether directly at creation, or explicitly from `Planned`) is what triggers the Evaluation Engine for the first time (Domain Invariant DI-01, restated). A Trade may be amended while `Open` (price/size corrections) and amendments to a `Closed` trade should be tracked as a distinct event rather than silently overwriting history — see `TradeAmended` in Section 11.
 
-**Relationships:** references (does not own) exactly one Strategy, one Setup, one Session, one Entry Trigger (each optional — a trade can exist with some classification fields unset, matching current Excel behavior); references zero or more Mistake Tags; owns exactly one `EvaluationSnapshot` and one `ChecklistSnapshot`.
+**Relationships:** references (does not own) exactly one Strategy, one Setup, one Session, one Entry Trigger (each optional — a trade can exist with some classification fields unset, matching current Excel behavior); references zero or more Mistake Tags; owns exactly one `EvaluationSnapshot` and one `ChecklistSnapshot` once past `Planned`.
 
-**Invariants:** see DI-01, DI-02, DI-06 (Section 14) and INV-TRADE-01/02/03 (Section 15).
+**Invariants:** see DI-01, DI-02, DI-06 (Section 14) and INV-TRADE-01/02/03/04 (Section 15).
 
-**Future Evolution:** if Open Question 4 (Simple vs. Pro entry mode) resolves toward both modes being permanent, `Trade` should be modeled as always having the full set of optional fields — "Simple" is a UI presentation concern (which fields are shown), never a different shape of the entity itself.
+**Future Evolution:** resolved, v2.0 — `Trade` is now modeled as always having the full set of optional fields; "Simple" is a UI presentation concern (which fields are shown), never a different shape of the entity itself. This is no longer a future evolution note; it is the current model.
+
+See Key Domain Decision KDD-07 (Section 6) for the full context, decision, and reasoning behind `TradeStatus`, `TakeProfit`, `MarginUsed`, and the explicit rejection of storing `ROI %`/`P&L %`.
 
 ### 8.2 EvaluationSnapshot — *(Value Object owned by Trade, Evaluation Context)*
 
@@ -464,17 +474,23 @@ Belongs to the Playbook Context. Given `StatisticsAggregationService` output gro
 
 ## 13. Entity Lifecycles
 
-### 13.1 Trade
+### 13.1 Trade *(v2.0 — three stages, see KDD-07)*
 ```
 [ not yet created ]
-        │  register (invariants checked here)
+        │  register (status chosen explicitly: Planned or Open)
+        ▼
+   ( Planned ) ──amend──▶ ( Planned )      [no Evaluation yet]
+        │
+        │  open (Entry Price + Entry Date supplied together;
+        │        first Evaluation runs here)
         ▼
      ( Open ) ──amend──▶ ( Open )
         │
-        │  close (Result + Exit Price supplied together)
+        │  close (Result + Exit Price + Realized P&L supplied together)
         ▼
      ( Closed: TP | SL | BE ) ──amend──▶ ( Closed ) [raises TradeAmended, not silently]
 ```
+A Trade registered directly as `Open` (or already-`Closed`, per API Spec §6.4's "may be supplied now") skips the `Planned` stage entirely — `Planned` is optional, never mandatory, exactly mirroring the Excel's own usage (most rows go straight to `Activo`/`Cerrado`; `No iniciado` is used only when the trader genuinely has not acted yet).
 
 ### 13.2 ScoringConfiguration
 ```
@@ -519,6 +535,8 @@ These are the fundamental truths of the TradeOS business domain. They must hold 
 - **DI-10:** Catalog entries are never deleted while any Trade references them — deactivation, not deletion, is the only removal mechanism.
 - **DI-11:** Analytics never becomes a source of truth — any statistic must be reproducible on demand from Trading + Evaluation data alone, never from Analytics' own independently-drifting copy.
 - **DI-12:** Captured % is defined only for TP trades; it is never expressed as a negative number for a losing trade.
+- **DI-13 *(added v2.0)*:** A `Planned` Trade is never scored by the Evaluation Engine and never contributes to any Analytics figure — Evaluation and Analytics both operate exclusively on Trades that have reached at least `Open`.
+- **DI-14 *(added v2.0)*:** ROI % and P&L % are always computed from `realized_pnl`/`margin_used`/`leverage` at read time — never stored as independent facts (KDD-07, Section 6).
 
 ---
 
@@ -528,9 +546,10 @@ This consolidates the enforceable, implementation-facing form of the Domain Inva
 
 | ID | Rule | Realizes | Enforced By |
 |---|---|---|---|
-| INV-TRADE-01 | Long: Stop < Entry. Short: Stop > Entry. | DI-02 | Trade aggregate, at creation/amendment |
-| INV-TRADE-02 | Closing a Trade requires Result + Exit Price together | DI-01 | Trade aggregate |
+| INV-TRADE-01 | Long: Stop < Entry. Short: Stop > Entry — only checked once both exist (never for `Planned`) | DI-02 | Trade aggregate, at creation/amendment/open |
+| INV-TRADE-02 *(redefined v2.0)* | `status=Planned` ⟺ no Entry Price/Entry Date/Result/Exit Price/Realized P&L. `status=Open` ⟺ Entry Price + Entry Date present, Result/Exit Price/Realized P&L absent. `status=Closed` ⟺ Result + Exit Price + Realized P&L present together | DI-01 | Trade aggregate |
 | INV-TRADE-03 (= audit BR-009) | Capital-before is derived sequentially from the prior Trade's capital-after + injections | — | Trading Context (explicit, not implicit) |
+| INV-TRADE-04 *(added v2.0)* | A `Planned` Trade may transition only to `Open`, never directly to `Closed` | DI-13 | Trade aggregate |
 | INV-CRITERION-01 | Criteria are identified by stable ID, never row position | — | ScoringConfiguration aggregate |
 | INV-CRITERION-02 | A criterion belongs to exactly one engine | — | ScoringConfiguration aggregate |
 | INV-WEIGHT-01 | Aggregation divides by the sum of *active* weights only | — | EvaluationEngine domain service |
@@ -570,7 +589,7 @@ These are domains intentionally **not modeled yet**, reserved so that when they 
 
 | Domain Concept | Product Bible Reference | Excel Reference |
 |---|---|---|
-| Trade | Section 9, "Trades" module | `📒 Trades` |
+| Trade | Section 9, "Trades" module | `📒 Trades` (66 columns, institutional detail) and `📒 Trades simple` (17 columns) — `TradeStatus` (v2.0) traces to both sheets' `Estado` column; `TakeProfit`/`MarginUsed` (v2.0) trace to both sheets' `TP`/`Margin` columns |
 | ChecklistSnapshot | Section 9, "Checklist" module | `CHECKLIST` |
 | EvaluationSnapshot / EvaluationEngine | Section 8 (entire) | Score columns in `📒 Trades`; weights in `⚙️ CONFIG` |
 | ScoringConfiguration / ScoringCriterion / ScoringWeight | Section 9, "Configuration" module | `⚙️ CONFIG` — `MARKET_CONTEXT_CRITERIA`, `MARKET_CONTEXT_WEIGHTS`, and the linear engines' weight cells |
@@ -614,6 +633,7 @@ This document will change over time. How it may change, and how those changes ar
 |---|---|---|
 | 1.0 | 2026-07-24 | Initial canonical Domain Model. Derived from `TRADEOS_PRODUCT_BIBLE.md` v2.1 and the Excel-confirmed business logic in `PROJECT_AUDIT.md`. Covered strategic design, tactical design, and future extensibility. |
 | 1.1 | 2026-07-24 | Approved and frozen as canonical. Added Ubiquitous Language / Glossary (Section 2), Key Domain Decisions (Section 6), Domain Invariants (Section 14, distinct from and complementary to the existing Business Constraints Registry), Future Reserved Domains (Section 17), and Domain Model Versioning (Section 20). Renumbered all sections accordingly. |
+| 2.0 | 2026-07-30 | **MAJOR** (Section 20 process followed): redefined the Trade lifecycle. Introduced `TradeStatus` (`Planned`/`Open`/`Closed`) as a concept independent of `TradeResult` (now `TP`/`SL`/`BE`/`null` — `Open` removed as a result value). Added `TakeProfit`/`MarginUsed` as owned Trade information. Added Key Domain Decision KDD-07 (Section 6) documenting the trigger (direct inspection of `Trading_Journal_v2_0_Stable.xlsx`'s `Estado`/`TP`/`Margin` columns, present in both `📒 Trades` and `📒 Trades simple`, never captured in v1.1) and the explicit rejection of storing `ROI %`/`P&L %` as independent facts (always computed from `realized_pnl`/`margin_used`/`leverage`). Added DI-13/DI-14 (Section 14), redefined INV-TRADE-02 and added INV-TRADE-04 (Section 15), updated the Trade lifecycle diagram (Section 13.1) and the Traceability Appendix (Section 18) in the same revision, per this section's own mandate. |
 
 **Status:** FROZEN. This is the second permanent foundational document of TradeOS, after `TRADEOS_PRODUCT_BIBLE.md`.
 **Next document per the reconstruction plan:** database design (schemas, tables), to be created only now that this Domain Model is approved.

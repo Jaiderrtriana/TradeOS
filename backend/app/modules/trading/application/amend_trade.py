@@ -18,11 +18,19 @@ design rule directly: *"`POST /trades/{id}/close` — not `PATCH
 
 "Re-validated against the proposed full state, not just the changed
 field" (§4.8): `changes` is applied onto the already-loaded `Trade`
-before either `validate_stop_placement`/`validate_close_requires_result_
-and_exit_price` runs — the same two free functions `Trade.__post_init__`
-itself calls at construction time, reused here rather than duplicated,
-so amendment and registration can never silently diverge on what counts
-as a valid Trade state.
+before either `validate_stop_placement`/`validate_status_fields` runs —
+the same two free functions `Trade.__post_init__` itself calls at
+construction time, reused here rather than duplicated, so amendment and
+registration can never silently diverge on what counts as a valid Trade
+state.
+
+v2.0 (Trade Entry redesign): `status` is deliberately still **not**
+amendable here — transitions only ever happen through the explicit
+`open`/`close` actions (Domain Model §13.1's lifecycle diagram draws no
+`PATCH`-driven edge), so a `status` value in `changes` would still be
+rejected by `AMENDABLE_FIELDS` below exactly as before. `take_profit`/
+`margin_used` are new amendable fields (ordinary owned facts, no
+lifecycle implication, same treatment as `entry_price`/`stop_loss`).
 """
 
 import uuid
@@ -31,27 +39,26 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.trading.domain.trade import (
-    Trade,
-    validate_close_requires_result_and_exit_price,
-    validate_stop_placement,
-)
+from app.modules.trading.domain.trade import Trade, validate_status_fields, validate_stop_placement
 from app.modules.trading.infrastructure.repository import TradeRepository
 from app.platform.errors import NotFoundError, UnprocessableEntityError
 from app.platform.events.base import DomainEvent
 from app.platform.events.dispatcher import EventDispatcher
 
-# The complete amendable field set -- deliberately excludes result,
-# exit_price, closed_at (CloseTrade's own responsibility, see module
-# docstring), plus id/user_id/timestamps/realized_pnl/created_by_user_id
-# (none of which any frozen document names as amendable).
+# The complete amendable field set -- deliberately excludes status,
+# result, exit_price, closed_at (CloseTrade/OpenTrade's own
+# responsibility, see module docstring), plus id/user_id/timestamps/
+# realized_pnl/created_by_user_id (none of which any frozen document
+# names as amendable).
 AMENDABLE_FIELDS = frozenset(
     {
         "market",
         "direction",
         "entry_price",
         "stop_loss",
+        "take_profit",
         "size",
+        "margin_used",
         "leverage",
         "notes",
         "strategy_id",
@@ -100,8 +107,13 @@ class AmendTradeUseCase:
             setattr(trade, field, value)
 
         validate_stop_placement(trade.direction, trade.entry_price, trade.stop_loss)
-        validate_close_requires_result_and_exit_price(
-            trade.result, trade.exit_price, trade.closed_at
+        validate_status_fields(
+            trade.status,
+            trade.entry_price,
+            trade.entered_at,
+            trade.exit_price,
+            trade.closed_at,
+            trade.result,
         )
 
         trade.updated_at = datetime.now(timezone.utc)

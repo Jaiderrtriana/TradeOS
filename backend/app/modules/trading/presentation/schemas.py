@@ -6,6 +6,16 @@ TRADEOS_API_SPECIFICATION.md §6.4 field-for-field.
 Established "own DTOs per module" discipline (Sprint 3.3): every module
 defines its own presentation shapes mirroring another module's, never
 importing them, even when the shape is identical field-for-field.
+
+v2.0 (Trade Entry redesign, Domain Model KDD-07): this layer only
+enforces *shape* (types, allowed enum values) — which fields are
+actually required for a given `status` (INV-TRADE-02) is a business
+rule, enforced once, in `Trade.__post_init__`/`validate_status_fields`
+(never duplicated here as a Pydantic cross-field validator, matching
+this codebase's established DDD layering, `TRADEOS_SYSTEM_ARCHITECTURE.md`
+§3.3). So every field that is only conditionally required is Optional
+here, and a missing-when-required field surfaces as the domain layer's
+own `UnprocessableEntityError` (422), not a Pydantic 422.
 """
 
 from datetime import datetime
@@ -13,33 +23,34 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.modules.trading.domain.trade import (
-    BREAK_EVEN,
-    DIRECTIONS,
-    OPEN,
-    RESULTS,
-    STOP_LOSS,
-    TAKE_PROFIT,
-)
+from app.modules.trading.domain.trade import DIRECTIONS, RESULTS, STATUSES
 
-CLOSE_RESULTS = (TAKE_PROFIT, STOP_LOSS, BREAK_EVEN)
+CLOSE_RESULTS = RESULTS
 
 
 class RegisterTradeRequest(BaseModel):
     market: str = Field(max_length=20)
     direction: str = Field(pattern="^(" + "|".join(DIRECTIONS) + ")$")
-    entry_price: float
-    stop_loss: float
-    # Required — approved resolution, Sprint 4.1: RegisterTrade calls
-    # Evaluation, which requires a scoring_profile; the original API
-    # Specification omitted this field from POST /trades even though
-    # POST /evaluation/preview already required it for the same
-    # computation. See CHANGELOG.md.
-    scoring_profile: str = Field(max_length=30)
+    # Required, no default (v2.0) — every Trade must state its lifecycle
+    # stage explicitly at creation, `TRADEOS_API_SPECIFICATION.md` §6.4.
+    status: str = Field(pattern="^(" + "|".join(STATUSES) + ")$")
+    # Required unless status = planned (§6.4) — enforced in
+    # RegisterTradeUseCase, not here (see module docstring).
+    scoring_profile: str | None = Field(default=None, max_length=30)
+    # Required when status = open|closed; absent while status = planned
+    # (§6.4) — enforced by Trade.__post_init__, not here.
+    entry_price: float | None = None
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    entered_at: datetime | None = None
+    # Required additionally when status = closed (§6.4).
     exit_price: float | None = None
+    result: str | None = Field(default=None, pattern="^(" + "|".join(RESULTS) + ")$")
+    closed_at: datetime | None = None
+    realized_pnl: float = 0
     size: float = 0
+    margin_used: float | None = None
     leverage: str = ""
-    result: str = Field(default=OPEN, pattern="^(" + "|".join(RESULTS) + ")$")
     strategy_id: UUID | None = None
     setup_id: UUID | None = None
     session_id: UUID | None = None
@@ -47,6 +58,20 @@ class RegisterTradeRequest(BaseModel):
     notes: str = ""
     mfe_price: float | None = None
     mae_price: float | None = None
+    # Ignored while status = planned (§6.4) — a Planned Trade has no
+    # Evaluation to feed yet.
+    checklist_answers: dict[str, str | float] = Field(default_factory=dict)
+
+
+class OpenTradeRequest(BaseModel):
+    """`POST /trades/{id}/open` (§6.4, new in v2.0) — transitions a
+    `Planned` Trade to `Open`, triggering Evaluation for the first time."""
+
+    entry_price: float
+    entered_at: datetime
+    scoring_profile: str = Field(max_length=30)
+    stop_loss: float | None = None
+    take_profit: float | None = None
     checklist_answers: dict[str, str | float] = Field(default_factory=dict)
 
 
@@ -57,17 +82,20 @@ class AmendTradeRequest(BaseModel):
     omitted field is left untouched and an explicit `null` on a nullable
     field like `strategy_id` still clears it).
 
-    Deliberately excludes `result`/`exit_price`/`closed_at` (`CloseTrade`'s
-    own responsibility, see `application/amend_trade.py`'s docstring for
-    the two citations behind this split) and `checklist_answers`
-    (`ReevaluateTrade` reloads the existing `ChecklistSnapshot`
-    "unchanged" — it has no PATCH-style edit path)."""
+    Deliberately excludes `status`/`result`/`exit_price`/`closed_at`
+    (`OpenTrade`/`CloseTrade`'s own responsibility, see
+    `application/amend_trade.py`'s docstring for the citations behind
+    this split) and `checklist_answers` (`ReevaluateTrade` reloads the
+    existing `ChecklistSnapshot` "unchanged" — it has no PATCH-style edit
+    path)."""
 
     market: str | None = Field(default=None, max_length=20)
     direction: str | None = Field(default=None, pattern="^(" + "|".join(DIRECTIONS) + ")$")
     entry_price: float | None = None
     stop_loss: float | None = None
+    take_profit: float | None = None
     size: float | None = None
+    margin_used: float | None = None
     leverage: str | None = None
     notes: str | None = None
     strategy_id: UUID | None = None
@@ -81,6 +109,10 @@ class AmendTradeRequest(BaseModel):
 class CloseTradeRequest(BaseModel):
     result: str = Field(pattern="^(" + "|".join(CLOSE_RESULTS) + ")$")
     exit_price: float
+    # Both new in v2.0, both trader-supplied (never derived/computed
+    # server-side) — see application/close_trade.py's docstring.
+    realized_pnl: float
+    closed_at: datetime
     mfe_price: float | None = None
     mae_price: float | None = None
 
@@ -150,12 +182,15 @@ class TradeResponse(BaseModel):
     id: UUID
     market: str
     direction: str
-    entry_price: float
-    stop_loss: float
+    status: str
+    entry_price: float | None
+    stop_loss: float | None
+    take_profit: float | None
     exit_price: float | None
     size: float
+    margin_used: float | None
     leverage: str
-    result: str
+    result: str | None
     realized_pnl: float
     mfe_price: float | None
     mae_price: float | None
@@ -164,7 +199,7 @@ class TradeResponse(BaseModel):
     setup_id: UUID | None
     session_id: UUID | None
     entry_trigger_id: UUID | None
-    entered_at: datetime
+    entered_at: datetime | None
     closed_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -175,7 +210,11 @@ class TradeResponse(BaseModel):
     mae_r: float | None
     captured_pct: float | None
     potential_left_r: float | None
-    evaluation: EvaluationSnapshotResponse
+    roi_percent: float | None
+    pnl_percent: float | None
+    # `None` while status = planned — a Planned Trade has no Evaluation
+    # yet (Domain Invariant DI-13).
+    evaluation: EvaluationSnapshotResponse | None
 
 
 class TradeDetailResponse(TradeResponse):
@@ -187,7 +226,10 @@ class TradeDetailResponse(TradeResponse):
     single-resource endpoint"). Deliberately a separate class from
     `TradeResponse`, not an added field on it — `TradeResponse` is
     `POST`/`PATCH`/`close`'s already-shipped response contract
-    (Sprints 4.1-4.2) and stays untouched."""
+    (Sprints 4.1-4.2) and stays untouched.
+
+    `{}` while status = planned — no ChecklistSnapshot exists yet
+    (Domain Invariant DI-13)."""
 
     checklist_answers: dict[str, str | float]
 
@@ -223,12 +265,15 @@ class TradeSummaryResponse(BaseModel):
     id: UUID
     market: str
     direction: str
-    entry_price: float
-    stop_loss: float
+    status: str
+    entry_price: float | None
+    stop_loss: float | None
+    take_profit: float | None
     exit_price: float | None
     size: float
+    margin_used: float | None
     leverage: str
-    result: str
+    result: str | None
     realized_pnl: float
     mfe_price: float | None
     mae_price: float | None
@@ -237,7 +282,7 @@ class TradeSummaryResponse(BaseModel):
     setup_id: UUID | None
     session_id: UUID | None
     entry_trigger_id: UUID | None
-    entered_at: datetime
+    entered_at: datetime | None
     closed_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -246,7 +291,9 @@ class TradeSummaryResponse(BaseModel):
     mae_r: float | None
     captured_pct: float | None
     potential_left_r: float | None
-    evaluation: EvaluationSnapshotSummaryResponse
+    roi_percent: float | None
+    pnl_percent: float | None
+    evaluation: EvaluationSnapshotSummaryResponse | None
 
 
 class PaginationMeta(BaseModel):

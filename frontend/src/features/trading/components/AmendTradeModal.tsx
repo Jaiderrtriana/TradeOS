@@ -45,9 +45,11 @@ export function AmendTradeModal({
     defaultValues: {
       market: trade.market,
       direction: trade.direction,
-      entry_price: trade.entry_price,
-      stop_loss: trade.stop_loss,
+      entry_price: trade.entry_price ?? undefined,
+      stop_loss: trade.stop_loss ?? undefined,
+      take_profit: trade.take_profit ?? undefined,
       size: trade.size,
+      margin_used: trade.margin_used ?? undefined,
       leverage: trade.leverage,
       notes: trade.notes,
       strategy_id: trade.strategy_id ?? undefined,
@@ -120,7 +122,7 @@ export function AmendTradeModal({
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-3 gap-4">
           <div>
             <label htmlFor="amend-entry-price" className="mb-1 block text-sm text-text-secondary">
               Entry Price
@@ -148,6 +150,31 @@ export function AmendTradeModal({
               <p className="mt-1 text-xs text-danger">{errors.stop_loss.message}</p>
             )}
           </div>
+          <div>
+            <label htmlFor="amend-take-profit" className="mb-1 block text-sm text-text-secondary">
+              Take Profit
+            </label>
+            <input
+              id="amend-take-profit"
+              type="number"
+              step="any"
+              className="w-full rounded border border-border bg-bg-base px-3 py-2 text-sm text-text-primary"
+              {...register("take_profit")}
+            />
+          </div>
+        </div>
+
+        <div>
+          <label htmlFor="amend-margin-used" className="mb-1 block text-sm text-text-secondary">
+            Margin Used
+          </label>
+          <input
+            id="amend-margin-used"
+            type="number"
+            step="any"
+            className="w-full rounded border border-border bg-bg-base px-3 py-2 text-sm text-text-primary"
+            {...register("margin_used")}
+          />
         </div>
 
         <div>

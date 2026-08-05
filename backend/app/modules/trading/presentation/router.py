@@ -49,11 +49,12 @@ from app.modules.trading.application.get_trade_evaluation_history import (
 )
 from app.modules.trading.application.list_trade_mistakes import ListTradeMistakesUseCase
 from app.modules.trading.application.list_trades import ListTradesUseCase
+from app.modules.trading.application.open_trade import OpenTradeUseCase
 from app.modules.trading.application.reevaluate_trade import ReevaluateTradeUseCase
 from app.modules.trading.application.register_trade import RegisterTradeUseCase
 from app.modules.trading.application.tag_mistake import TagMistakeUseCase
 from app.modules.trading.domain.evaluation_snapshot import EvaluationSnapshot
-from app.modules.trading.domain.trade import Trade
+from app.modules.trading.domain.trade import PLANNED, Trade
 from app.modules.trading.infrastructure.repository import (
     ChecklistSnapshotRepository,
     EvaluationSnapshotRepository,
@@ -72,6 +73,7 @@ from app.modules.trading.presentation.schemas import (
     EvaluationSnapshotSummaryResponse,
     GradedEngineResultResponse,
     GradedEngineSummaryResponse,
+    OpenTradeRequest,
     PaginatedTradesResponse,
     PaginationMeta,
     ReevaluateTradeRequest,
@@ -126,13 +128,19 @@ async def register_trade(
         user_id=user_id,
         market=payload.market,
         direction=payload.direction,
+        status=payload.status,
+        scoring_profile=payload.scoring_profile,
         entry_price=payload.entry_price,
         stop_loss=payload.stop_loss,
-        scoring_profile=payload.scoring_profile,
+        take_profit=payload.take_profit,
+        entered_at=payload.entered_at,
         exit_price=payload.exit_price,
-        size=payload.size,
-        leverage=payload.leverage,
         result=payload.result,
+        closed_at=payload.closed_at,
+        realized_pnl=payload.realized_pnl,
+        size=payload.size,
+        margin_used=payload.margin_used,
+        leverage=payload.leverage,
         strategy_id=payload.strategy_id,
         setup_id=payload.setup_id,
         session_id=payload.session_id,
@@ -158,6 +166,7 @@ async def list_trades(
     session: AsyncSession = Depends(get_db_session),
     user_id: UUID = Depends(get_current_user_id),
     direction: str | None = None,
+    status: str | None = None,
     result: str | None = None,
     entered_after: datetime | None = None,
     entered_before: datetime | None = None,
@@ -187,6 +196,7 @@ async def list_trades(
     trades = await use_case.execute(
         user_id,
         direction=direction,
+        status=status,
         result=result,
         entered_after=entered_after,
         entered_before=entered_before,
@@ -205,17 +215,23 @@ async def list_trades(
         [trade.id for trade in page]
     )
 
+    # `entered_at` is `NULL` for a `Planned` Trade (v2.0) -- keyset
+    # pagination cannot key off a `NULL` boundary, so a page ending on one
+    # simply stops (`next_cursor = None`) rather than crash encoding it.
     next_cursor = (
-        encode_trade_cursor(page[-1].entered_at, page[-1].id) if has_more and page else None
+        encode_trade_cursor(page[-1].entered_at, page[-1].id)
+        if has_more and page and page[-1].entered_at is not None
+        else None
     )
 
-    # Indexed directly, never filtered defensively: every Trade owns
-    # exactly one current EvaluationSnapshot (maintained since
-    # RegisterTrade) -- a missing entry here would be a genuine
-    # data-integrity bug, and should fail loudly (KeyError -> 500) rather
-    # than silently omit a real Trade from the caller's list.
+    # Indexed directly, never filtered defensively: every non-Planned
+    # Trade owns exactly one current EvaluationSnapshot (maintained since
+    # RegisterTrade/OpenTrade); a Planned Trade legitimately has none yet
+    # (Domain Invariant DI-13) and maps to `None` here instead.
     return PaginatedTradesResponse(
-        data=[_trade_summary_response(trade, evaluations_by_trade_id[trade.id]) for trade in page],
+        data=[
+            _trade_summary_response(trade, evaluations_by_trade_id.get(trade.id)) for trade in page
+        ],
         pagination=PaginationMeta(next_cursor=next_cursor, has_more=has_more),
     )
 
@@ -232,9 +248,12 @@ async def get_trade(
         EvaluationSnapshotRepository(session),
     )
     result = await use_case.execute(trade_id, user_id)
+    checklist_answers = (
+        result.checklist_snapshot.answers if result.checklist_snapshot is not None else {}
+    )
     return TradeDetailResponse(
         **_trade_response(result.trade, result.evaluation).model_dump(),
-        checklist_answers=result.checklist_snapshot.answers,
+        checklist_answers=checklist_answers,
     )
 
 
@@ -273,9 +292,39 @@ async def amend_trade(
 ) -> TradeResponse:
     use_case = AmendTradeUseCase(TradeRepository(session), dispatcher, session)
     trade = await use_case.execute(trade_id, user_id, payload.model_dump(exclude_unset=True))
-    evaluation = await _require_current_evaluation(session, trade_id)
+    evaluation = await _current_evaluation(session, trade)
     await session.commit()
     return _trade_response(trade, evaluation)
+
+
+@router.post("/{trade_id}/open", response_model=TradeResponse)
+async def open_trade(
+    trade_id: UUID,
+    payload: OpenTradeRequest,
+    session: AsyncSession = Depends(get_db_session),
+    user_id: UUID = Depends(get_current_user_id),
+) -> TradeResponse:
+    use_case = OpenTradeUseCase(
+        TradeRepository(session),
+        ChecklistSnapshotRepository(session),
+        EvaluationSnapshotRepository(session),
+        build_get_configuration_version_use_case(session),
+        build_preview_evaluation_use_case(session),
+        dispatcher,
+        session,
+    )
+    result = await use_case.execute(
+        trade_id,
+        user_id,
+        entry_price=payload.entry_price,
+        entered_at=payload.entered_at,
+        scoring_profile=payload.scoring_profile,
+        stop_loss=payload.stop_loss,
+        take_profit=payload.take_profit,
+        checklist_answers=payload.checklist_answers,
+    )
+    await session.commit()
+    return _trade_response(result.trade, result.evaluation)
 
 
 @router.post("/{trade_id}/close", response_model=TradeResponse)
@@ -291,10 +340,12 @@ async def close_trade(
         user_id,
         result=payload.result,
         exit_price=payload.exit_price,
+        realized_pnl=payload.realized_pnl,
+        closed_at=payload.closed_at,
         mfe_price=payload.mfe_price,
         mae_price=payload.mae_price,
     )
-    evaluation = await _require_current_evaluation(session, trade_id)
+    evaluation = await _current_evaluation(session, trade)
     await session.commit()
     return _trade_response(trade, evaluation)
 
@@ -381,26 +432,32 @@ async def tag_mistake(
     )
 
 
-async def _require_current_evaluation(session: AsyncSession, trade_id: UUID) -> EvaluationSnapshot:
-    """Every Trade owns exactly one current `EvaluationSnapshot`, maintained
-    since `RegisterTrade` -- a `None` here would be a genuine data-integrity
-    bug elsewhere, not a request-shape concern, so it fails loudly rather
-    than being folded into the request-facing error envelope."""
-    evaluation = await EvaluationSnapshotRepository(session).get_current_by_trade_id(trade_id)
-    if evaluation is None:
-        raise RuntimeError(f"Trade '{trade_id}' has no current EvaluationSnapshot.")
+async def _current_evaluation(session: AsyncSession, trade: Trade) -> EvaluationSnapshot | None:
+    """Every non-Planned Trade owns exactly one current `EvaluationSnapshot`,
+    maintained since `RegisterTrade`/`OpenTrade` -- a `None` for one of
+    those would be a genuine data-integrity bug elsewhere, not a
+    request-shape concern, so it fails loudly rather than being folded
+    into the request-facing error envelope. A `Planned` Trade legitimately
+    has none yet (Domain Invariant DI-13) -- `None` is the correct result
+    for it, not a bug."""
+    evaluation = await EvaluationSnapshotRepository(session).get_current_by_trade_id(trade.id)
+    if evaluation is None and trade.status != PLANNED:
+        raise RuntimeError(f"Trade '{trade.id}' has no current EvaluationSnapshot.")
     return evaluation
 
 
-def _trade_response(trade: Trade, evaluation: EvaluationSnapshot) -> TradeResponse:
+def _trade_response(trade: Trade, evaluation: EvaluationSnapshot | None) -> TradeResponse:
     return TradeResponse(
         id=trade.id,
         market=trade.market,
         direction=trade.direction,
+        status=trade.status,
         entry_price=trade.entry_price,
         stop_loss=trade.stop_loss,
+        take_profit=trade.take_profit,
         exit_price=trade.exit_price,
         size=trade.size,
+        margin_used=trade.margin_used,
         leverage=trade.leverage,
         result=trade.result,
         realized_pnl=trade.realized_pnl,
@@ -420,7 +477,9 @@ def _trade_response(trade: Trade, evaluation: EvaluationSnapshot) -> TradeRespon
         mae_r=trade.mae_r,
         captured_pct=trade.captured_pct,
         potential_left_r=trade.potential_left_r,
-        evaluation=_evaluation_response(evaluation),
+        roi_percent=trade.roi_percent,
+        pnl_percent=trade.pnl_percent,
+        evaluation=_evaluation_response(evaluation) if evaluation is not None else None,
     )
 
 
@@ -483,7 +542,9 @@ def _evaluation_history_entry_response(
     )
 
 
-def _evaluation_summary_response(snapshot: EvaluationSnapshot) -> EvaluationSnapshotSummaryResponse:
+def _evaluation_summary_response(
+    snapshot: EvaluationSnapshot,
+) -> EvaluationSnapshotSummaryResponse:
     """`snapshot` here always comes from `EvaluationSnapshotRepository.
     list_current_by_trade_ids()`, whose own docstring guarantees
     `.breakdowns` is always `[]` for this read path -- never read from
@@ -505,15 +566,20 @@ def _evaluation_summary_response(snapshot: EvaluationSnapshot) -> EvaluationSnap
     )
 
 
-def _trade_summary_response(trade: Trade, evaluation: EvaluationSnapshot) -> TradeSummaryResponse:
+def _trade_summary_response(
+    trade: Trade, evaluation: EvaluationSnapshot | None
+) -> TradeSummaryResponse:
     return TradeSummaryResponse(
         id=trade.id,
         market=trade.market,
         direction=trade.direction,
+        status=trade.status,
         entry_price=trade.entry_price,
         stop_loss=trade.stop_loss,
+        take_profit=trade.take_profit,
         exit_price=trade.exit_price,
         size=trade.size,
+        margin_used=trade.margin_used,
         leverage=trade.leverage,
         result=trade.result,
         realized_pnl=trade.realized_pnl,
@@ -533,5 +599,7 @@ def _trade_summary_response(trade: Trade, evaluation: EvaluationSnapshot) -> Tra
         mae_r=trade.mae_r,
         captured_pct=trade.captured_pct,
         potential_left_r=trade.potential_left_r,
-        evaluation=_evaluation_summary_response(evaluation),
+        roi_percent=trade.roi_percent,
+        pnl_percent=trade.pnl_percent,
+        evaluation=_evaluation_summary_response(evaluation) if evaluation is not None else None,
     )

@@ -69,7 +69,7 @@ def test_win_rate_counts_break_even_as_closed_but_not_a_win():
 def test_open_trades_excluded_from_win_rate_and_r_metrics():
     facts = [
         _fact(result="tp", r_multiple=2.0),
-        _fact(result="open", r_multiple=None),
+        _fact(result=None, r_multiple=None),
     ]
     summary = aggregate_statistics(facts)
     assert (
@@ -103,7 +103,7 @@ def test_profit_factor_divides_gross_profit_by_gross_loss():
 def test_total_pnl_sums_every_non_deleted_trade_including_open_ones():
     facts = [
         _fact(result="tp", realized_pnl=100.0),
-        _fact(result="open", realized_pnl=0.0, r_multiple=None),
+        _fact(result=None, realized_pnl=0.0, r_multiple=None),
     ]
     summary = aggregate_statistics(facts)
     assert summary.total_pnl == 100.0

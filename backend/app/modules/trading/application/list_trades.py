@@ -22,6 +22,7 @@ class ListTradesUseCase:
         user_id: uuid.UUID,
         *,
         direction: str | None = None,
+        status: str | None = None,
         result: str | None = None,
         entered_after: datetime | None = None,
         entered_before: datetime | None = None,
@@ -36,6 +37,7 @@ class ListTradesUseCase:
         return await self._trades.list_all(
             user_id=user_id,
             direction=direction,
+            status=status,
             result=result,
             entered_after=entered_after,
             entered_before=entered_before,

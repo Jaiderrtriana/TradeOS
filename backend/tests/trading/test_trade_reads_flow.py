@@ -91,8 +91,10 @@ def _base_payload(criteria, **overrides) -> dict:
     payload = {
         "market": "EURUSD",
         "direction": "long",
+        "status": "open",
         "entry_price": 100.0,
         "stop_loss": 95.0,
+        "entered_at": "2026-01-01T00:00:00Z",
         "scoring_profile": PROFILE,
         "checklist_answers": {
             criteria["confidence"][1]: "Yes",
@@ -129,8 +131,12 @@ async def test_list_trades_returns_summary_shape_ordered_newest_first(client):
     headers = await _auth_headers(client)
     suffix = uuid.uuid4().hex[:8]
     _version_id, criteria = await _create_and_publish_version(client, headers, suffix)
-    first = await _register_trade(client, headers, criteria, market="EURUSD")
-    second = await _register_trade(client, headers, criteria, market="GBPUSD")
+    first = await _register_trade(
+        client, headers, criteria, market="EURUSD", entered_at="2026-01-01T00:00:00Z"
+    )
+    second = await _register_trade(
+        client, headers, criteria, market="GBPUSD", entered_at="2026-01-01T00:01:00Z"
+    )
 
     response = await client.get("/api/v1/trades", headers=headers)
     assert response.status_code == 200, response.text
@@ -166,7 +172,13 @@ async def test_list_trades_paginates_with_cursor(client):
     suffix = uuid.uuid4().hex[:8]
     _version_id, criteria = await _create_and_publish_version(client, headers, suffix)
     for i in range(3):
-        await _register_trade(client, headers, criteria, market=f"PAIR{i}")
+        await _register_trade(
+            client,
+            headers,
+            criteria,
+            market=f"PAIR{i}",
+            entered_at=f"2026-01-01T00:0{i}:00Z",
+        )
 
     first_page = await client.get("/api/v1/trades?limit=2", headers=headers)
     assert first_page.status_code == 200, first_page.text
