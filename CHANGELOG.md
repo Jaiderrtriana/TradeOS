@@ -4093,3 +4093,129 @@ revision).
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Sprint 8.1 — Dashboard Composition
+
+Phase 8 of the Implementation Master Plan, closing sprint — Milestone M8
+is achieved. Scope (`TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` §9):
+*"`GET /dashboard`, composing already-built Trades + Statistics
+capability; the Dashboard page... introduces no new backend logic."*
+Verified as the correct next sprint by cross-checking the Master Plan's
+own sequencing against `CHANGELOG.md`'s last Master Plan entry (Sprint
+7.2) and the real code (`GET /dashboard` did not exist; `DashboardPage`
+was still Sprint 0.3's placeholder) before writing anything — no
+contradiction found between the Master Plan, the API Specification, and
+the Frontend Blueprint for this sprint.
+
+### Pre-analysis: two undocumented numeric values, resolved with the
+product owner before implementation
+No frozen document names a numeric default for either value; both were
+confirmed explicitly rather than invented:
+- **Rolling window default** for the composed response: **10**, matching
+  the only real precedent in this codebase — `RollingTab.tsx`'s own
+  `useState<RollingWindow>(10)`.
+- **Recent Trades preview size**: **5**, one order of magnitude with the
+  Frontend Blueprint's own explicit "top 3" for the Mistakes preview.
+
+### Architectural decisions (adjusted from the initial plan, per product
+owner review)
+- **`ListTradesWithEvaluationsUseCase`** added to Trading's own
+  Application layer (`trading/application/list_trades_with_evaluations.py`,
+  purely additive — `GET /trades`'s existing router is untouched) so
+  Dashboard can obtain Trade+current-Evaluation pairs without ever
+  reaching into Trading's `infrastructure/` directly, the same
+  cross-module precedent `ListTradeStatisticsFactsUseCase` (Sprint 6.1)
+  and `ListMistakeOccurrencesUseCase` (Sprint 5.2) already established.
+- **Own DTOs, not shared ones.** A real tension surfaced mid-implementation:
+  the product owner's instruction to "reuse Trading's read models to
+  avoid drift" collided with `playbook/presentation/schemas.py`'s own,
+  already-shipped docstring — *"each module owns its own HTTP contract
+  DTOs (no cross-module presentation-layer import)... applied everywhere
+  in this project."* Flagged and resolved before writing code: Dashboard
+  reuses the Application-layer objects where the actual computation
+  lives (`Trade`, `StatisticsSummary`, `RollingStatistics`,
+  `MistakeRankingResult` — zero risk of a second, drifting formula), but
+  defines its own lightweight Pydantic/TypeScript response shapes
+  (`Dashboard*Response` / `Dashboard*` types), exactly mirroring how
+  `PlaybookSetupPerformanceResponse` already duplicates
+  `StatisticsSummaryResponse`'s fields rather than importing them
+  (Sprint 7.1). Confirmed machine-enforced on the frontend by this
+  project's own `eslint-plugin-boundaries` config: only `pages/*` may
+  import across features; `dashboard/{api,types,queryKeys,components}`
+  never import from `trading`/`statistics`/`mistakes`.
+- **Single `build_get_dashboard_use_case(session)` factory**
+  (`dashboard/application/get_dashboard.py`) — the router calls exactly
+  one factory and invokes it; it never constructs
+  `GetStatisticsOverviewUseCase`/`GetRollingStatisticsUseCase`/
+  `GetMistakeRankingUseCase`/`ListTradesWithEvaluationsUseCase` itself,
+  matching every other module's `build_*` discipline.
+- **Extensibility, deliberately minimal.** `DashboardSummary` holds one
+  field per composed section, each resolved by its own independent call
+  in `execute()`. A future composed section (Equity Curve, Playbook
+  Performance, Market Bias — all currently unbuilt/reserved per
+  `TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` §17) means adding one field and
+  one call, never restructuring existing ones. No registry, no plugin
+  mechanism — none of those sections has a confirmed endpoint today, so
+  none is stubbed.
+- No `domain/` or `infrastructure/` folder for the new `dashboard/`
+  module — Dashboard is explicitly not a Bounded Context
+  (`TRADEOS_API_SPECIFICATION.md` §5.1) and owns no data, mirroring the
+  same "no infrastructure for a pure composition" precedent Statistics
+  and Mistakes already set.
+
+### Bug found during E2E verification — pre-existing, unrelated,
+not fixed
+While writing the "log a real Trade, see it on the Dashboard" E2E test,
+`POST /api/v1/trades` returned `422 Unprocessable Entity` when submitted
+through `TradeEntryModal`'s current UI flow, confirmed via the real
+backend's own structured request log. This is **not a Dashboard defect**
+— the identical, unmodified helper in the already-existing (uncommitted)
+`e2e/statistics.spec.ts` fails at the exact same line with the exact
+same error, proving the regression lives in the still-uncommitted Trade
+Entry Redesign v2.0 work, not in anything built this sprint. **Not
+fixed** — out of Sprint 8.1's scope (Dashboard composition only), and
+modifying another module's unreviewed, uncommitted form code risks
+masking or misdiagnosing a defect that isn't this sprint's to own.
+Registered here for visibility, matching the same "found, not silently
+worked around" posture Sprint 7.2's own `ProForm.tsx` bug note set.
+Backend correctness was verified instead through Sprint 8.1's own
+integration tests, which register/close Trades directly via the API
+(`httpx.AsyncClient`, bypassing the affected UI form entirely) and pass
+cleanly.
+
+### Added
+- Backend: `app/modules/trading/application/list_trades_with_evaluations.py`
+  (new, additive); `app/modules/dashboard/{application/get_dashboard.py,
+  presentation/{router.py,schemas.py}}`; `main.py` registers
+  `dashboard_router`. `tests/dashboard/test_dashboard_flow.py` (5
+  integration tests, including the Master Plan §10-named regression
+  test: "Dashboard never duplicates a number differently than its source
+  endpoint returns it").
+- Frontend: `src/features/dashboard/{types,api,queryKeys,format}.ts`,
+  `components/{RecentTradesPreview,TopMistakesPreview}.tsx` (+ 5 unit
+  tests), `pages/DashboardPage.tsx` (replaces the Sprint-0-era
+  placeholder). `e2e/dashboard.spec.ts` (3 tests).
+
+### Verification performed
+- Backend: full `pytest` suite — **357 passed** (5 new; 352 carried
+  over), real ephemeral PostgreSQL 16 via Testcontainers, never mocked;
+  `ruff check` — clean; `mypy` — clean (0 issues, 7 source files).
+- Frontend: `tsc -b --noEmit` — clean; `eslint .` — clean (`boundaries`
+  rules respected: no non-page file in `features/dashboard` imports
+  another feature); `prettier --check` on the two new files — clean (a
+  pre-existing formatting debt across ~24 unrelated, already-uncommitted
+  files was left untouched — out of this sprint's scope); `vitest run`
+  — **93 passed** (5 new; 88 carried over).
+- E2E: real stack (Docker Postgres 16 + `uvicorn` + Chromium/Playwright,
+  never mocked) — `e2e/dashboard.spec.ts` **2/3 passed** (empty-state
+  landing page, unauthenticated redirect); the third (full log-a-Trade
+  walkthrough) is blocked by the pre-existing, unrelated bug documented
+  above, reproduced identically against the already-existing
+  `statistics.spec.ts` to confirm it is not a regression introduced this
+  sprint.
+- Audit: zero TODO/FIXME, zero `console.log`/`debugger` statements in
+  any new file (`grep` across every backend and frontend path touched
+  this sprint — no matches).
+
+### Confirmation
+No `git push` was run at any point.

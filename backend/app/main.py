@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.modules.configuration.presentation.catalogs_router import router as catalogs_router
 from app.modules.configuration.presentation.router import router as configuration_router
+from app.modules.dashboard.presentation.router import router as dashboard_router
 from app.modules.evaluation.presentation.router import router as evaluation_router
 from app.modules.identity.presentation.router import router as identity_router
 from app.modules.journal.presentation.router import router as journal_router
@@ -75,6 +76,7 @@ app.include_router(journal_router, prefix="/api/v1")
 app.include_router(mistakes_router, prefix="/api/v1")
 app.include_router(playbook_router, prefix="/api/v1")
 app.include_router(statistics_router, prefix="/api/v1")
+app.include_router(dashboard_router, prefix="/api/v1")
 
 # Middleware order matters: Starlette runs the LAST-added middleware
 # OUTERMOST (first on the way in). Order, outermost to innermost:
