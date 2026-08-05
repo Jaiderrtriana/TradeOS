@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { ensurePublishedConfiguration } from "./helpers/configuration";
+
 /**
  * Cross-stack E2E — Sprint 4.4's deliverable, Milestone M4
  * (`TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` §7): "A trader logs a Trade
@@ -10,10 +12,15 @@ import { expect, test } from "@playwright/test";
  * e2e/auth-and-preferences.spec.ts).
  *
  * Uses `day_trading`, one of the 3 `scoring_profiles` seeded by
- * migration `0004` — no Configuration setup needed for Simple mode
- * (unlike evaluation-preview.spec.ts, which needs a published criterion
- * to see a non-zero score; this suite doesn't assert on score values,
- * only that the end-to-end flow completes).
+ * migration `0004`. That migration seeds reference catalog data only —
+ * it does NOT publish a `ScoringConfigurationVersion` (that requires a
+ * `created_by_user_id` attributed to a real, already-registered user,
+ * per `TRADEOS_IMPLEMENTATION_MASTER_PLAN.md`'s Sprint 2.1 entry, so it
+ * cannot happen inside a schema migration). `registerAndLogIn` below
+ * publishes its own empty version via `ensurePublishedConfiguration` so
+ * this suite never depends on another spec file having published one
+ * first — this suite doesn't assert on score values, only that the
+ * end-to-end flow completes.
  */
 
 const API_BASE_URL = "http://localhost:8000/api/v1";
@@ -30,6 +37,8 @@ async function registerAndLogIn(page: import("@playwright/test").Page) {
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/$/);
+
+  await ensurePublishedConfiguration(page);
 }
 
 async function createMistakeTagEntry(page: import("@playwright/test").Page, name: string) {

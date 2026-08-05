@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { ensurePublishedConfiguration } from "./helpers/configuration";
+
 /**
  * Cross-stack E2E — Sprint 5.2's deliverable, Milestone M5
  * (`TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` §7): "the Mistake priority
@@ -11,6 +13,13 @@ import { expect, test } from "@playwright/test";
  * cost-based rank that does **not** change when the visible row order
  * is re-sorted by Frequency instead — the approved architectural
  * decision distinguishing "Priority" from "current table row index."
+ *
+ * `registerAndLogIn` publishes its own `ScoringConfigurationVersion` via
+ * `ensurePublishedConfiguration` — `createAndCloseTrade` below goes
+ * through `POST /trades`, which requires one to exist
+ * (`TRADEOS_SYSTEM_ARCHITECTURE.md` ADR-03). This keeps the suite
+ * self-sufficient instead of depending on another spec file having
+ * published one first.
  */
 
 async function registerAndLogIn(page: import("@playwright/test").Page) {
@@ -25,6 +34,8 @@ async function registerAndLogIn(page: import("@playwright/test").Page) {
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/$/);
+
+  await ensurePublishedConfiguration(page);
 }
 
 async function createAndCloseTrade(

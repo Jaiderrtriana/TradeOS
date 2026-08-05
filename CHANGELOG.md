@@ -4183,6 +4183,24 @@ integration tests, which register/close Trades directly via the API
 (`httpx.AsyncClient`, bypassing the affected UI form entirely) and pass
 cleanly.
 
+**Correction (post-Sprint-8.1 investigation, see the hotfix entry
+below):** the attribution above — "the regression lives in the still-
+uncommitted Trade Entry Redesign v2.0 work" — is **factually incorrect**
+and is corrected here rather than silently edited. A full root-cause
+investigation (requested before proceeding to Phase 9) found via
+`git log --follow -S"No configuration version is available to evaluate
+against" -- backend/app/modules/trading/application/register_trade.py`
+that this exact validation was introduced by commit `3991112`, Sprint
+4.1's original `POST /trades` implementation — four sprints before Trade
+Entry Redesign v2.0 existed. The 422 is `RegisterTradeUseCase` correctly
+enforcing System Architecture ADR-03 (a Trade cannot be evaluated
+without a published `ScoringConfigurationVersion`) against a database
+with zero rows in `configuration.scoring_configuration_versions` — an
+environment/bootstrap gap (nothing had run `scripts/seed_configuration.py`
+on that machine), not a code defect in any layer, and not something v2.0
+introduced or touched. See "Hotfix — Environment Bootstrap & E2E Test
+Isolation" below for the full analysis and the fix.
+
 ### Added
 - Backend: `app/modules/trading/application/list_trades_with_evaluations.py`
   (new, additive); `app/modules/dashboard/{application/get_dashboard.py,
@@ -4216,6 +4234,203 @@ cleanly.
 - Audit: zero TODO/FIXME, zero `console.log`/`debugger` statements in
   any new file (`grep` across every backend and frontend path touched
   this sprint — no matches).
+
+### Confirmation
+No `git push` was run at any point.
+
+## Hotfix — Environment Bootstrap & E2E Test Isolation (post-Sprint 8.1, pre-Phase 9)
+
+Closes the one pending item carried over from Sprint 8.1's closing report:
+the `POST /trades` 422 that blocked the Dashboard E2E's full walkthrough.
+A full technical investigation (requested and delivered separately,
+before any file was touched) established the root cause and is
+summarized here; see the correction note added to Sprint 8.1's own "Bug
+found during E2E verification" section above for the retraction of that
+sprint's incorrect attribution.
+
+### Root cause
+
+Not a code defect. `RegisterTradeUseCase`/`OpenTradeUseCase`/
+`PreviewEvaluationUseCase` correctly require a published
+`ScoringConfigurationVersion` to evaluate against
+(`TRADEOS_SYSTEM_ARCHITECTURE.md` ADR-03) — this business rule dates to
+Sprint 4.1 (commit `3991112`), unchanged since. `scripts/seed_
+configuration.py`, the script that publishes the first version, is a
+manual, one-time, per-environment bootstrap step
+(`TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` Sprint 2.1: "Dependencies: Phase
+1 (a `user_id` must exist to attribute the seed action)" — this is why it
+cannot run as part of a schema migration, which executes before any user
+exists). On a freshly cloned/migrated environment nobody had run it, and
+nothing surfaced that gap until the first `POST /trades` — reproduced
+identically via direct `curl` against the backend with zero frontend
+involvement, confirming it as a pure backend/database-state condition,
+not a frontend/backend contract issue.
+
+A second, related gap: `e2e/trading.spec.ts`'s own comment claimed "no
+Configuration setup needed... seeded by migration `0004`" — false;
+migration `0004` seeds `engine_types`/`scoring_profiles` reference data
+only, never a published `ScoringConfigurationVersion` (its own docstring
+already said as much: those two tables "[have] no `user_id` attribution
+requirement, unlike the first `ScoringConfigurationVersion`"). The suite
+only ever passed because `evaluation-preview.spec.ts` and
+`configuration-and-catalogs.spec.ts` each publish their own Configuration
+as part of their own setup, and Playwright's `fullyParallel` execution
+against one shared, non-reset local Postgres let that publish silently
+satisfy every other spec's unstated dependency — a hidden ordering
+coupling, not a real fix.
+
+### Decision: bootstrap strategy (Option B of three evaluated)
+
+Three alternatives were compared against this project's own principles
+(Clean Architecture layering, minimal maintenance surface, no invented
+business rules):
+
+- **Keep the manual script, documented only.** Rejected as insufficient
+  — it is exactly the step that was already forgotten once; it does
+  nothing to make a new environment self-describing.
+- **A single official bootstrap command** (chosen) — `backend/scripts/
+  bootstrap.py`, living beside `seed_configuration.py` in the same
+  "tooling outside `app/modules/`" category the Sprint 2.1 CHANGELOG
+  entry already established for that script. Orchestrates `alembic
+  upgrade head` (Stage 1, no prior state required) then delegates to
+  `seed_configuration.seed()` unchanged (Stage 2, once a `--user-id` is
+  known) — zero duplicated logic, zero new business rule.
+- **Bootstrap from the FastAPI `lifespan` hook.** Rejected. `main.py`'s
+  `lifespan` today does pure in-memory wiring (binding the event
+  dispatcher) with no persistent side effect and no notion of "current
+  user" — publishing a Configuration there would need to invent a
+  `user_id` from nothing, breaking the Master Plan's own attribution
+  requirement, and would re-run once per worker process on every
+  multi-worker deployment, an automatic, repeated invocation of business
+  logic no other part of this codebase's startup path performs.
+
+No change was made to `RegisterTradeUseCase`, the Domain Model, any API
+contract, or any validation rule — confirmed by `git diff --stat`
+against `backend/app/modules/trading/` and `backend/app/modules/
+configuration/domain/` and `.../application/` showing zero changes.
+
+### Added
+- `backend/scripts/bootstrap.py` — new, additive. Two-stage CLI
+  (`--user-id` optional): Stage 1 runs `alembic upgrade head`
+  programmatically (`alembic.command.upgrade`); Stage 2, once a
+  `--user-id` is supplied, calls the existing, unmodified `scripts.
+  seed_configuration.seed()`. Idempotent in both stages (Alembic tracks
+  applied revisions; `seed()` already no-ops once a published version
+  exists).
+- `README.md` — new. The project's first installation runbook: 
+  prerequisites, backend/frontend setup, the two-stage bootstrap with
+  the exact commands, and a golden-path checklist (register → log in →
+  create a Trade → Evaluation → Dashboard) to confirm a clean environment
+  is fully operational without any undocumented manual step.
+- `frontend/e2e/helpers/configuration.ts` — new. `ensurePublishedConfiguration(page)`
+  publishes a fresh, empty `ScoringConfigurationVersion` via direct API
+  calls (no criteria/weights — the specs using it never assert on score
+  values, only end-to-end completion and price-derived metrics).
+  Publishing itself is protected against data corruption by
+  `ScoringConfigurationVersionRepository.lock_for_publish()`'s advisory
+  lock plus migration `0006`'s partial unique index (`ADR_CONFIGURATION
+  _PUBLISH_RACE_CONDITION.md`, already closed) — but that guarantees only
+  "at most one published row, ever," not "the specific version a given
+  test just published stays published for the rest of that test." See
+  the `playwright.config.ts` change below for why that distinction
+  mattered here.
+
+### Modified
+- `frontend/e2e/trading.spec.ts`, `statistics.spec.ts`, `dashboard.spec.ts`,
+  `journal.spec.ts`, `mistakes.spec.ts` — each `registerAndLogIn` now
+  calls `ensurePublishedConfiguration` after logging in. All five create
+  or close a Trade via the UI (directly, or through the shared
+  `createAndCloseTrade`/`createTradeSimple` helpers) and were equally
+  exposed to the same hidden cross-file dependency; `evaluation-preview
+  .spec.ts` and `configuration-and-catalogs.spec.ts` already published
+  their own Configuration and needed no change. `playbook.spec.ts` never
+  creates a Trade and was unaffected.
+- `frontend/e2e/trading.spec.ts` — corrected the stale comment
+  attributing "no Configuration setup needed" to migration `0004`;
+  replaced with the accurate reason (this suite now publishes its own).
+- `frontend/e2e/dashboard.spec.ts` — two locator fixes in the "Dashboard
+  composes metrics..." test, found only once this hotfix let the test
+  run past the 422 for the first time since Sprint 8.1: `getByText("Win
+  Rate")` and `getByText("100.0%")` were ambiguous (the Rolling/All-Time
+  section below renders its own "Rolling Win Rate"/"All-Time Win Rate"
+  cards, and with one Trade all three percentages read identically) —
+  scoped to the specific MetricCard via its exact label and that label's
+  DOM sibling. Pre-existing, dormant since Sprint 8.1 (never previously
+  reachable — the 422 always blocked the test first); not a regression
+  from this change, but only discoverable because of it.
+- `frontend/playwright.config.ts` — added `workers: 1`. Root cause: five
+  more spec files now each publish their own `ScoringConfigurationVersion`
+  (above), and Playwright's `fullyParallel` execution runs different spec
+  files in separate, concurrent workers against the same shared database.
+  A publish from any worker immediately supersedes whichever version
+  another worker's test was relying on, mid-test — this is the exact,
+  already-documented 2-file race between `evaluation-preview.spec.ts` and
+  `configuration-and-catalogs.spec.ts` (`ADR_CONFIGURATION_PUBLISH_RACE
+  _CONDITION.md`; tolerated across Sprints 6.2/7.2/Trade Entry v2.0's own
+  closing reports as an occasional, re-run-and-confirm flake), just with
+  5 more files now able to trigger it. Empirically, with 6 default
+  workers this reproduced as a deterministic-feeling failure (`evaluation
+  -preview.spec.ts`'s score assertions reading a stray empty Configuration
+  published by a concurrently-running file), not the occasional flake it
+  used to be — widening the blast radius this much made "re-run and
+  confirm it's a flake" no longer an honest verification story. `workers:
+  1` removes cross-file concurrency structurally (the same "database
+  constraint over caller discipline" preference this project's backend
+  fix already made for the identical underlying resource), fully closing
+  this class of flake rather than just not making it worse. Trade-off:
+  full suite wall-clock time rose from ~20s (6 workers) to ~67s (1
+  worker) — judged acceptable for a single-maintainer project with no CI
+  pipeline yet; revisit if that changes.
+- `CHANGELOG.md` — added the correction note to Sprint 8.1's "Bug found
+  during E2E verification" section (see above).
+
+### Verification performed
+- Backend: `pytest` (full suite) — **357 passed**, 0 failed, real
+  ephemeral PostgreSQL 16 via Testcontainers; `ruff format --check` /
+  `ruff check` — clean (one pre-existing formatting debt in
+  `tests/dashboard/test_dashboard_flow.py`, already present in Sprint
+  8.1's own commit `45cc28b`, left untouched — out of scope, same
+  precedent Sprint 8.1 itself set for unrelated formatting debt); `mypy`
+  — 9 pre-existing errors in 4 files (`test_statistics_aggregation.py`,
+  `test_correlation_id_middleware.py`, `test_jwt.py`, an unchecked-defs
+  note in `test_seed_bias_engine.py`), none in any file this hotfix
+  touched — confirmed via `git log` that none of the 4 were modified
+  here. No test needed changing — the fix is additive tooling, not a
+  behavior change to any Use Case.
+- Frontend: `tsc -b --noEmit` — clean; `eslint .` — clean; `vitest run`
+  — **93 passed**, 0 failed; `prettier --check` on every touched file —
+  clean.
+- E2E: full `playwright test` suite (30 tests) run against a **completely
+  fresh** environment from this session's own clean-install verification
+  below (not a pre-warmed dev database) — **30/30 passed**, confirmed on
+  two consecutive full runs after the `workers: 1` fix (deterministic,
+  not "passed once"). Before that fix, the full suite intermittently
+  failed 1-2 of `evaluation-preview.spec.ts`/`configuration-and-catalogs
+  .spec.ts` (the pre-existing cross-file Configuration race, confirmed
+  via isolated re-runs of just those files passing cleanly every time) —
+  root-caused to this hotfix's own new publishers, not a flake to shrug
+  off, and fixed structurally rather than re-run-until-green.
+- Clean-install verification, exactly following the new `README.md`,
+  performed once end-to-end this session: `docker compose down -v` (drop
+  the Postgres volume entirely) → `docker compose up -d` → `PYTHONPATH=.
+  poetry run python scripts/bootstrap.py` (Stage 1, zero prior state) →
+  registered a user via `POST /api/v1/auth/register` → confirmed `POST
+  /trades` still 422s at this point (proving the bug reproduces on a
+  genuinely fresh install, not just this developer's already-seeded
+  machine) → `PYTHONPATH=. poetry run python scripts/bootstrap.py
+  --user-id <uuid>` (Stage 2) → re-sent the identical `POST /trades`
+  payload → **201 Created** with a full Evaluation body, confirming the
+  fix directly against the backend, independent of the E2E suite → full
+  `playwright test` suite (register → log in → create a Trade → close it
+  → view its Evaluation → `/dashboard` renders metrics and the Recent
+  Trades preview, per `trading.spec.ts`'s and `dashboard.spec.ts`'s own
+  golden-path tests) — 30/30 passed against this same freshly-bootstrapped
+  stack, serving as the browser-driven walkthrough.
+- Audit: `grep` confirms zero TODO/FIXME/`console.log`/`debugger` in
+  every file touched; `git diff --stat` confirms no change under
+  `backend/app/modules/trading/domain/`, `.../application/register_trade.py`,
+  `backend/app/modules/configuration/domain/`, or any `*/presentation/schemas.py`
+  (API contracts unchanged).
 
 ### Confirmation
 No `git push` was run at any point.

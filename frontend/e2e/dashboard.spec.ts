@@ -1,11 +1,20 @@
 import { expect, test } from "@playwright/test";
 
+import { ensurePublishedConfiguration } from "./helpers/configuration";
+
 /**
  * Cross-stack E2E — Sprint 8.1's deliverable, Milestone M8
  * (`TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` §7): the Dashboard as the
  * post-login landing page, composing Statistics/Mistakes/Trading into
  * one screen. Requires the real backend running and migrated (same
  * prerequisite as e2e/statistics.spec.ts).
+ *
+ * `registerAndLogIn` publishes its own `ScoringConfigurationVersion` via
+ * `ensurePublishedConfiguration` — `createAndCloseTrade` below goes
+ * through `POST /trades`, which requires one to exist
+ * (`TRADEOS_SYSTEM_ARCHITECTURE.md` ADR-03). This keeps the suite
+ * self-sufficient instead of depending on another spec file having
+ * published one first.
  */
 
 async function registerAndLogIn(page: import("@playwright/test").Page) {
@@ -20,6 +29,8 @@ async function registerAndLogIn(page: import("@playwright/test").Page) {
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/$/);
+
+  await ensurePublishedConfiguration(page);
 }
 
 async function createAndCloseTrade(
@@ -70,8 +81,12 @@ test("Dashboard composes metrics and a recent Trades preview after logging a Tra
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-  await expect(page.getByText("Win Rate")).toBeVisible();
-  await expect(page.getByText("100.0%")).toBeVisible();
+  // Exact + scoped to this specific MetricCard: the Rolling/All-Time
+  // section below also renders "Win Rate"-labeled cards with their own
+  // (here, identical) percentage, so a bare text match would be ambiguous.
+  const winRateLabel = page.getByText("Win Rate", { exact: true });
+  await expect(winRateLabel).toBeVisible();
+  await expect(winRateLabel.locator("xpath=following-sibling::p[1]")).toHaveText("100.0%");
 
   await expect(page.getByText(`D${suffix}`)).toBeVisible();
   await page.getByText(`D${suffix}`).click();
