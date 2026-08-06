@@ -1,8 +1,8 @@
 # TRADEOS_API_SPECIFICATION.md
 
 **Document Status:** CANONICAL AND FROZEN — the official API specification of TradeOS.
-**Version:** 1.2
-**Last Updated:** 2026-07-30
+**Version:** 1.3
+**Last Updated:** 2026-08-05
 **Depends On:** all five prior frozen documents (`PROJECT_AUDIT.md`, `TRADEOS_PRODUCT_BIBLE.md`, `TRADEOS_DOMAIN_MODEL.md`, `TRADEOS_SYSTEM_ARCHITECTURE.md`, `TRADEOS_DATABASE_DESIGN.md`). This document invents no business rule, entity, or table — it defines the contract through which the business capabilities already modeled become callable.
 **Is Not:** implementation code, controllers, DTOs, services, or an OpenAPI/Swagger document. It contains enough structure to generate one later (Section 16) without being one.
 
@@ -43,6 +43,8 @@ REST over HTTPS, JSON request/response bodies. Confirmed, not reopened, from `TR
 
 ### 3.2 Versioning Strategy
 URL path versioning: `/api/v1/...`. All endpoints in this document are `v1`. A breaking change (Section 12) is introduced as `/api/v2/...` for the affected resource only — this API does not version the entire surface at once, only the resources that actually changed, to avoid forcing frontend upgrades for unrelated modules.
+
+**One deliberate exception:** the health-check endpoint (Section 6.0) lives outside `/api/v1` entirely. It is infrastructure (a process-liveness signal for hosting-platform probes), not a versioned business resource — versioning it alongside `Trades`/`Configuration`/etc. would incorrectly imply it is subject to the same deprecation lifecycle (Section 13) as business capabilities.
 
 ### 3.3 URL Conventions
 - Collection: `/api/v1/trades` (plural noun).
@@ -123,16 +125,32 @@ Grouped by Bounded Context (`TRADEOS_DOMAIN_MODEL.md` Section 4), matching `TRAD
 | **Statistics** | Read-only performance analytics, all-time and rolling | Yes |
 | **Journal** | Free-text reflection | Yes |
 | **Dashboard** | A single composition endpoint for the frontend home view | Yes, but **not a Bounded Context** — see Section 5.1 |
+| **Health Check** | A liveness signal for hosting-platform infrastructure (load balancers, orchestrators) | Yes, but **not a Bounded Context, and not a business module at all** — see Section 5.2 |
 | **Trading Accounts, Reports, AI, Notifications, Calendar** | Named in the prompt for this document | **Not confirmed** — see Section 17 |
 
 ### 5.1 Dashboard Is a Composition, Not a New Bounded Context
 `GET /api/v1/dashboard` exists purely for frontend convenience — it composes calls already available individually through Statistics and Trades into one response, sparing the frontend N round-trips for a single screen. It introduces no new business capability and owns no data. This is stated explicitly so it is never mistaken for evidence that "Dashboard" deserves its own Bounded Context — it does not (Domain Model Section 4 names no such context, and none is needed).
+
+### 5.2 Health Check Is Cross-Cutting Infrastructure, Not a Bounded Context
+`GET /healthz` (Section 6.0) exists to resolve `TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` Open Question OQ-1 and `TRADEOS_BACKEND_BLUEPRINT.md` Known Gap BE-7 — Phase 9 (Deployment & Production Hardening)'s Sprint 9.1 cannot be exit-verified without a defined contract a hosting platform's readiness probe can call. It has no Domain Model entity, owns no data, requires no authentication, and is not versioned under `/api/v1` (Section 3.2). It is listed in the module table above only for discoverability, not because it is a Bounded Context or even a business capability.
 
 ---
 
 ## 6. Endpoint Specifications
 
 **Scoping note:** per this document's mandate to be complete without becoming unusable, every endpoint is listed with its full contract (URL, method, auth, request, response, status codes). The eight endpoints most illustrative of a pattern used repeatedly elsewhere (trade registration, trade closure, re-evaluation, evaluation preview, configuration publishing, catalog deactivation, statistics by-dimension, journal creation) are specified in full prose detail. The remainder follow the identical shape and are specified in compact table form — omitting a field from a compact entry means it follows the same rule already established by the nearest full-detail sibling endpoint (e.g., all `GET` list endpoints share one pagination contract, Section 7).
+
+### 6.0 Health Check (Cross-Cutting — No Bounded Context, Section 5.2)
+
+#### `GET /healthz`
+- **Purpose:** a liveness signal — confirms the backend process is running and able to handle requests. Resolves `TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` Open Question OQ-1 and `TRADEOS_BACKEND_BLUEPRINT.md` Known Gap BE-7.
+- **Path:** deliberately outside `/api/v1` (Section 3.2) — this is infrastructure, not a versioned business resource.
+- **Auth Required:** No. Exempt from `AuthenticationMiddleware` entirely (added to the same `PUBLIC_PATHS` mechanism already used for `/api/v1/auth/register`, `/login`, `/refresh`) — a load balancer or orchestrator's probe cannot authenticate.
+- **Scope — liveness only, not readiness:** this endpoint does **not** check database connectivity or any other dependency. A transient database hiccup should not cause a hosting platform to kill and restart an otherwise-healthy backend process — that would trade a recoverable, transient condition for an unnecessary restart, disproportionate to this project's current scale (`TRADEOS_PRODUCT_BIBLE.md` NFR 10.4). If a real readiness probe (one that does check dependencies) becomes necessary because of a specific hosting platform's requirements or a genuine future operational need, it must be introduced as a **separate, new endpoint** (e.g., `GET /readyz`) — never by expanding this endpoint's contract to silently start checking dependencies callers did not ask it to check.
+- **Request Body:** none.
+- **Response Body (200):** `{ "status": "ok" }`.
+- **Status Codes:** `200` only. If the process cannot respond at all, the absence of a response (connection refused/timeout) *is* the failure signal — there is no defined non-200 response body for this endpoint to return, since a process able to construct and return JSON is, by this endpoint's own definition, live.
+- **Contract stability — intentionally minimal, deliberately extensible:** the response body above is the complete v1 contract. Callers **must** treat any field beyond `status` as absent — do not assume today's shape (`{"status": "ok"}` and nothing else) is exhaustive going forward. Additional, purely informational fields (e.g., `version`, `commit`, `uptime`) may be added in a future revision of this document **without** that being a breaking change and without a `v2` — the only guarantee this contract makes, now and after any such addition, is that a live process returns HTTP `200` with a JSON body whose `status` field equals the string `"ok"`. A client (or an operator's monitoring script) that keys its liveness check on anything other than `status == "ok"` is depending on behavior this contract does not promise.
 
 ### 6.1 Authentication Module
 
@@ -636,6 +654,7 @@ Reserved, undesigned, consistent with `TRADEOS_DOMAIN_MODEL.md` Section 17 (Futu
 | Authenticate | Authentication, Users | `POST /auth/login` | UserAccount (§8.11) | `identity` (§6.1) | Login screen |
 | Personalize the app | Preferences | `PATCH /preferences` | UserPreferences (§8.12) | `preferences` (§6.2) | Settings screen |
 | One-screen overview | Dashboard | `GET /dashboard` | *(composition only, §5.1 — no dedicated entity)* | *(composition of the above)* | Dashboard |
+| Confirm the process is alive (infrastructure, not a business capability) | Health Check | `GET /healthz` | *(none — §5.2, no Bounded Context)* | *(none — no data owned or read)* | N/A — consumed by hosting-platform infrastructure, never the frontend |
 
 Every endpoint in Section 6 appears in, or is a variant of, a row above. Any future endpoint must be added as a new row before being implemented, per the same standard `TRADEOS_DATABASE_DESIGN.md` Section 15 and `TRADEOS_DOMAIN_MODEL.md` Section 18 already established.
 
@@ -648,6 +667,7 @@ Every endpoint in Section 6 appears in, or is a variant of, a row above. Any fut
 | 1.0 | 2026-07-24 | Initial API Specification. Derived from all five frozen foundational documents. Defined API philosophy, REST architecture, authentication/authorization model, 12 API modules, full endpoint specifications, a unified filtering/sorting/pagination standard, a unified error model, validation rules, an explicit "no Long Running Operations in v1" position, event integration flows (correcting the source prompt's illustrative example where it didn't match confirmed behavior), versioning policy, security and performance considerations, OpenAPI readiness, reserved future extensions, six known gaps, and a full traceability matrix. |
 | 1.1 | 2026-07-24 | Approved and frozen as canonical. Added API Design Principles (Section 2, a concrete, tactical checklist distinct from Section 1's higher-level Philosophy) and Endpoint Lifecycle (Section 13, formalizing Experimental/Stable/Deprecated/Removed states and confirming every currently-specified endpoint starts Experimental). Renumbered all sections accordingly. |
 | 1.2 | 2026-07-30 | Downstream of `TRADEOS_DOMAIN_MODEL.md` v2.0 (KDD-07) and `TRADEOS_DATABASE_DESIGN.md` v1.2. Section 6.4: `POST /trades` gains required `status` (`planned`\|`open`\|`closed`), with `entry_price`/`stop_loss`/`entered_at`/`scoring_profile` now conditionally required (absent while `status=planned`); `take_profit`/`margin_used` added as optional fields; `realized_pnl`/`closed_at` now required inputs of `status=closed`/`POST /trades/{id}/close` (previously never a client-supplied field); response gains computed `roi_percent`/`pnl_percent`. New endpoint `POST /trades/{id}/open` (Section 11.1.1) — the `Planned → Open` transition, firing `TradeOpened` and Evaluation for the first time. `GET /trades` gains `?status=` filtering; `result` no longer accepts `open` as a filter value. |
+| 1.3 | 2026-08-05 | Resolves `TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` Open Question OQ-1 and `TRADEOS_BACKEND_BLUEPRINT.md` Known Gap BE-7, ahead of Phase 9 (Deployment & Production Hardening), Sprint 9.1, whose Exit Criteria cannot be verified without this contract existing. New Section 6.0: `GET /healthz` — a liveness-only endpoint (explicitly not a readiness/dependency check), unauthenticated, outside `/api/v1` versioning. New Section 5.2 explaining why it is cross-cutting infrastructure, not a Bounded Context. Section 3.2 amended to note this one exception to universal `/api/v1` versioning. Section 19 Traceability Matrix gains a row. No existing endpoint's contract changed. |
 
 **Status:** FROZEN. This is the sixth permanent foundational document of TradeOS, after `PROJECT_AUDIT.md`, `TRADEOS_PRODUCT_BIBLE.md`, `TRADEOS_DOMAIN_MODEL.md`, `TRADEOS_SYSTEM_ARCHITECTURE.md`, and `TRADEOS_DATABASE_DESIGN.md`.
 **Next document:** to be determined.

@@ -40,12 +40,14 @@ configure_logging()
 # "Auth Required: No" — register/login/refresh issue or exchange
 # credentials themselves, so they cannot require an access token to reach.
 # /auth/logout and every /preferences endpoint are deliberately absent:
-# both require a valid access token (§6.1, §6.3).
+# both require a valid access token (§6.1, §6.3). /healthz (§6.0) is also
+# public — a hosting platform's liveness probe cannot authenticate.
 PUBLIC_PATHS = frozenset(
     {
         "/api/v1/auth/register",
         "/api/v1/auth/login",
         "/api/v1/auth/refresh",
+        "/healthz",
     }
 )
 
@@ -66,6 +68,19 @@ app = FastAPI(
 )
 
 register_exception_handlers(app)
+
+
+@app.get("/healthz")
+async def healthz() -> dict[str, str]:
+    """
+    Liveness only (TRADEOS_API_SPECIFICATION.md §6.0) — deliberately does
+    not check database connectivity or any other dependency (see that
+    section for why). Outside `/api/v1` on purpose (§3.2): infrastructure,
+    not a versioned business resource, not owned by any module (§5.2).
+    """
+    return {"status": "ok"}
+
+
 app.include_router(identity_router, prefix="/api/v1")
 app.include_router(preferences_router, prefix="/api/v1")
 app.include_router(configuration_router, prefix="/api/v1")

@@ -1,8 +1,17 @@
 """
-Single, official entrypoint to leave a fresh TradeOS backend environment
-operational — applies pending Alembic migrations and, once a user exists,
-publishes the first `ScoringConfigurationVersion` by delegating to
-`scripts/seed_configuration.py`.
+Local-development convenience wrapper — applies pending Alembic
+migrations and, once a user exists, publishes the first
+`ScoringConfigurationVersion`, by composing two independent scripts
+(`scripts/migrate.py`, `scripts/seed_configuration.py`) in one command.
+
+**Not the production deployment mechanism.** Migrations and Configuration
+seeding have different lifecycles (see `scripts/migrate.py`'s own
+docstring for the full reasoning) and a real deployment (Phase 9, Sprint
+9.1) runs `scripts/migrate.py` on its own, as its own step, independent
+of whether or when seeding happens. This script exists purely so a
+developer setting up a fresh local clone doesn't need to remember two
+separate commands and their ordering — it is sugar over the same two
+scripts a deployment invokes separately, never a replacement for either.
 
 --- Why this exists ---
 
@@ -45,15 +54,8 @@ import argparse
 import asyncio
 import uuid
 
-from alembic import command
-from alembic.config import Config
-
+from scripts.migrate import run_migrations
 from scripts.seed_configuration import seed
-
-
-def run_migrations() -> None:
-    alembic_config = Config("alembic.ini")
-    command.upgrade(alembic_config, "head")
 
 
 def main() -> None:

@@ -4434,3 +4434,166 @@ configuration/domain/` and `.../application/` showing zero changes.
 
 ### Confirmation
 No `git push` was run at any point.
+
+## Sprint 9.1 — Containerization & Managed Database
+
+Phase 9 (Deployment & Production Hardening), first sprint
+(`TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` §9). Preceded by a full
+Fase 1–3 review cycle: audited all nine canonical documents plus every
+prior ADR to determine the next real sprint (not assumed from this
+CHANGELOG); found and resolved two genuine, previously-unresolved
+blocking items before any code was written — **OQ-3** (Product Bible
+Open Question 5, "does the Excel migrate?") — resolved: the Excel
+remains a permanent historical record, no import sprint added to Phase
+4 — and **OQ-1** (health-check contract, Backend Blueprint BE-7) —
+resolved via `TRADEOS_API_SPECIFICATION.md` v1.3 (see that document's
+own Document Control table for the full amendment). This sprint covers
+only what was explicitly approved as in-scope: the Dockerfile, its own
+isolated validation compose stack, and the migrations/seeding split.
+**Explicitly not in scope, not attempted:** choosing a real hosting
+platform or managed PostgreSQL provider, TLS, secrets management
+(Sprint 9.3) — Milestone M9 is not claimed here.
+
+### Decision: separating migrations from Configuration seeding
+
+Previously, `scripts/bootstrap.py` was a single two-stage script mixing
+both concerns. Per explicit instruction, migrations and seeding are now
+structurally independent commands with independent lifecycles:
+
+- `backend/scripts/migrate.py` (new) — the *only* thing it does is
+  `alembic upgrade head`. No dependency on any user existing. This is
+  what a real deployment runs — safe to invoke unconditionally, once,
+  before the application ever serves a request.
+- `backend/scripts/seed_configuration.py` — unchanged. Still requires
+  `--user-id`, still a manual, one-time, per-environment step.
+- `backend/scripts/bootstrap.py` — narrowed to what it always should
+  have been described as: a **local-development convenience wrapper**
+  that composes the two scripts above for a developer who doesn't want
+  to remember two commands. Its own docstring now says so explicitly.
+  Its public CLI (`--user-id` optional, two-stage usage) is unchanged;
+  internally it now imports `run_migrations` from `scripts/migrate.py`
+  instead of defining its own copy — zero duplicated logic.
+
+### Decision: `GET /healthz` (per `TRADEOS_API_SPECIFICATION.md` v1.3, §6.0)
+
+Added to `backend/app/main.py`: liveness only, no dependency checks,
+outside `/api/v1`, exempt from `AuthenticationMiddleware` via the same
+`PUBLIC_PATHS` mechanism already used for the three unauthenticated
+`/auth/*` endpoints. Deliberately minimal (`{"status": "ok"}`) and
+deliberately not expanded with a `/readyz` this sprint — see the API
+Specification's own §6.0 for the full contract-stability commitment.
+
+### Added
+- `backend/scripts/migrate.py` — migrations only (see above).
+- `backend/Dockerfile` — `python:3.12-slim`, Poetry, `--only main
+  --no-root` (no dev/test dependencies ship), non-root `appuser`, no
+  `--reload`, a `HEALTHCHECK` hitting `GET /healthz` via Python's own
+  `urllib` (no `curl` added, keeping the image lean), `ENV
+  PYTHONPATH=/app` (see "Bug found and fixed" below for why).
+- `backend/.dockerignore` — excludes `.venv`, caches, `.env`, `tests/`,
+  both compose files from the build context.
+- `backend/docker-compose.container.yml` — an **isolated** stack for
+  validating the Dockerfile's own image: its own Postgres (no volume,
+  throwaway by design), backend exposed on host port `8080` (not `8000`,
+  to coexist with a local dev session), explicit `name:
+  tradeos-container-validation` project name. Does **not** touch
+  `docker-compose.yml`, the development environment, at all.
+
+### Modified
+- `backend/scripts/bootstrap.py` — see "Decision" above; behavior
+  unchanged, internals de-duplicated.
+- `backend/app/main.py` — registers `GET /healthz`; adds `/healthz` to
+  `PUBLIC_PATHS`.
+- `docs/06_TRADEOS_API_SPECIFICATION.md` v1.2 → v1.3 — see that
+  document's own Document Control table.
+
+### Bug found and fixed during this sprint's own validation (not anticipated in the plan)
+
+**Near-miss with the local dev database.** The first version of
+`docker-compose.container.yml` had no explicit `name:`. Docker Compose
+derives its project name from the current directory by default, which
+is `backend` for **both** compose files — without an explicit,
+distinct name, `docker compose -f docker-compose.container.yml up`
+resolved its `postgres` service to the exact same container name
+(`backend-postgres-1`) as the dev compose's, and — because this file's
+`postgres` service intentionally has no volume — silently recreated and
+replaced the running dev Postgres container with a throwaway, unmounted
+one. Caught immediately (the dev container's absence was visible in
+`docker ps` right after), and the named volume `backend_tradeos_postgres_data`
+was confirmed untouched on disk (`docker volume ls`) — a plain `down`
+never deletes a named volume, only `down -v` does, and that was never
+run against it. The dev container was restored cleanly via `docker
+compose up -d` (dev's `docker-compose.yml`), reattaching to the same
+volume with zero data loss. Fixed structurally, not just noted: `name:
+tradeos-container-validation` added to the top of the file, with the
+full incident documented inline as a comment, so this cannot recur
+silently. Registered here per this project's own standing rule (Master
+Plan §11.1, item 8: "any new Known Gap or Open Question discovered
+during the phase is registered, never silently patched") even though
+this is a tooling incident rather than a Known Gap in the formal sense.
+
+**`ModuleNotFoundError: No module named 'app'` running `seed_configuration.py`
+inside the container.** `python scripts/x.py` puts only the script's own
+directory on `sys.path`, not the working directory — exactly why local
+development docs already require `PYTHONPATH=.`. `uvicorn app.main:app`
+(the image's own `CMD`) resolves correctly through its own import
+machinery and never hit this; any future ad hoc `docker exec <image>
+python scripts/...` call would have, repeatedly. Fixed once, at the
+image level (`ENV PYTHONPATH=/app` in the `Dockerfile`), rather than
+requiring every future caller to remember the flag.
+
+### Verification performed
+
+- **Backend regression:** full `pytest` suite, unchanged — **357
+  passed**, 0 failed. `ruff check`/`ruff format --check` — clean (the
+  same one pre-existing, unrelated formatting debt in
+  `tests/dashboard/test_dashboard_flow.py` from Sprint 8.1's own commit,
+  still untouched). `mypy` — same 9 pre-existing, unrelated errors in
+  the same 4 files as every prior sprint's own verification section;
+  none in any file this sprint touched.
+- **Image build:** `docker build` — succeeds without any additional
+  system packages (asyncpg/argon2-cffi/cryptography all resolved
+  prebuilt wheels; no `gcc`/`libpq-dev` needed). **Cold build (base
+  image pull included): ~218s. Warm rebuild (dependency layer cached,
+  only a small `ENV` change): ~1.5s** — confirms Docker layer caching
+  behaves as expected for this Dockerfile's own layer ordering
+  (dependencies installed before application code is copied).
+- **Image size:** **498 MB.**
+- **Container startup:** from `docker compose up -d` being issued to
+  the backend container reporting `healthy` (Postgres startup + backend
+  boot + first passing `HEALTHCHECK`): **~11.8s** (measured twice for
+  consistency after the `name:` fix).
+- **`HEALTHCHECK`:** passes — `docker inspect`'s own health log shows
+  `"Status": "healthy"`, `"ExitCode": 0`. External check via the mapped
+  port: `curl http://localhost:8080/healthz` → `{"status":"ok"}`,
+  `HTTP 200`.
+- **Migrations inside the container:** `docker compose exec backend
+  python scripts/migrate.py` — all 12 migrations (`0001`→`0012`) applied
+  cleanly, in order, against the isolated stack's fresh Postgres.
+- **Full smoke test against the running container** (real `CMD`, no
+  `--reload`, exposed on `8080`), following the exact five-step flow
+  approved for this sprint (infra → migrate → app up → register user →
+  seed once): register → login → `POST /trades` **pre-seed, confirmed
+  422** (identical to every prior confirmation this project has done of
+  this exact precondition) → `docker exec ... python
+  scripts/seed_configuration.py --user-id <uuid>` → `POST /trades`
+  **201**, full Evaluation body returned. Proves the migrate/seed
+  separation works end-to-end inside the actual container, not just in
+  local dev.
+- **Dev environment integrity:** confirmed `backend-postgres-1` (the
+  development Postgres) was running, on its original volume, throughout
+  and after every container-validation run in this sprint.
+
+### Confirmation
+
+This sprint is **not** a claim that Phase 9 or Milestone M9 is complete.
+Explicitly documented, per instruction: validation in this sprint was
+performed **entirely against local Docker** (the isolated
+`docker-compose.container.yml` stack) — no managed PostgreSQL instance
+and no real hosting platform were used, because none has been chosen
+yet. The final verification against a real managed database, on the
+eventually-chosen hosting platform, remains pending and is what will
+actually permit declaring the deployment portion of the roadmap
+finished — this sprint closes the containerization and bootstrap-
+separation work, not the deployment itself. No `git push` was run at
+any point.

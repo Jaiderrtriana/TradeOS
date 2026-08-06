@@ -1,0 +1,59 @@
+# Container-validation stack — Sprint 9.1 only. NOT the development
+# environment (that remains exactly `docker-compose.yml`, untouched).
+#
+# `name:` below is NOT cosmetic — Docker Compose derives its project
+# name (and therefore every container/volume/network name) from the
+# current directory by default, which is `backend` for BOTH this file
+# and `docker-compose.yml`. Without an explicit, distinct `name:`, this
+# file's `postgres` service resolves to the exact same container name
+# (`backend-postgres-1`) as the dev compose's, and brings it up with NO
+# volume — `docker compose -f docker-compose.container.yml up` silently
+# recreates and replaces the running dev Postgres container with a
+# throwaway, unmounted one. This is not hypothetical: it happened during
+# this file's own first verification run this session (the named volume
+# `backend_tradeos_postgres_data` was untouched on disk and the dev
+# container was successfully restored via `docker compose up -d`
+# afterward, but only because that volume is never deleted by a plain
+# `down` — a `down -v` at the wrong moment would not have been
+# recoverable). The explicit project name below makes that class of
+# collision structurally impossible, the same "make the bad state
+# unrepresentable" preference already used elsewhere in this project
+# (e.g. the partial unique index in migration `0006`) rather than
+# trusting every future invocation to remember to pass `-p` correctly.
+name: tradeos-container-validation
+#
+# Fully isolated from local dev: its own Postgres container, its own
+# network, and the backend exposed on a different host port (8080, not
+# 8000) specifically so it can run side by side with a local `pnpm dev`/
+# `uvicorn --reload` session without any port collision.
+#
+# This validates that the Dockerfile's own image, run via its real CMD,
+# serves real traffic correctly — it does not replace the final
+# verification against a real managed PostgreSQL instance once a hosting
+# platform is chosen (Master Plan Sprint 9.1 Exit Criteria).
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tradeos
+      POSTGRES_PASSWORD: tradeos
+      POSTGRES_DB: tradeos
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tradeos"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://tradeos:tradeos@postgres:5432/tradeos
+      JWT_SECRET_KEY: container-validation-only-not-for-production
+      JWT_ALGORITHM: HS256
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "30"
+      REFRESH_TOKEN_EXPIRE_DAYS: "30"
+    ports:
+      - "8080:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
