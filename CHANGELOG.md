@@ -4778,16 +4778,66 @@ before implementation and re-confirmed after.
   tradeos-container-validation` project continues to prevent any
   collision.
 
+### Self-Audit (post-implementation correction pass)
+
+A dedicated, critical re-review of this sprint's own Final Report,
+performed before closing the sprint, found two real documentation gaps
+and confirmed several other points that were already correct:
+
+- **Documentation gap, fixed:** `TRADEOS_SYSTEM_ARCHITECTURE.md` §12.1
+  and `TRADEOS_TECHNICAL_STACK.md` §13 still spoke only of a *class* of
+  hosting platform, even though Render had, by this point, actually
+  been selected and committed to in `render.yaml` — a real decision
+  already made, not merely planned. Both sections now record that
+  selection explicitly (a short addition each, not a rewrite), while
+  preserving their own class-level architectural reasoning intact,
+  exactly as the equivalent `/healthz` amendment in Sprint 9.1 recorded
+  a real decision without inventing new architecture.
+- **`render.yaml` re-verified line by line against official Render
+  documentation, not memory, specifically checking for deprecated
+  fields:** confirmed this file uses none of the fields Render's own
+  Blueprint reference explicitly flags as deprecated (`env` → `runtime`,
+  `autoDeploy` → `autoDeployTrigger`, `afterFirstDeployCommand` →
+  `initialDeployHook`, `previewsEnabled`/`pullRequestPreviewsEnabled` →
+  `previews.generation`). No change needed — confirmed clean, not
+  assumed clean.
+- **Deploy-ordering, checked, not assumed:** confirmed via Render's own
+  Blueprint documentation that a service's `fromDatabase`/`fromService`
+  reference creates an automatic provisioning order — `tradeos-db` is
+  guaranteed to exist before `tradeos-backend`'s deploy runs. No
+  explicit `dependsOn` field exists or is needed; none was missing.
+- **Postgres `ipAllowList`, checked, disclosed rather than silently
+  accepted:** Render's own default for a new Postgres instance with no
+  `ipAllowList` set is "allow all IPs, require valid credentials" —
+  this `render.yaml` does not set `ipAllowList`, so it inherits that
+  default. This is Render's own stated baseline for managed Postgres,
+  not a hole introduced by this sprint, and combined with
+  `DATABASE_SSL_REQUIRED` it matches the security posture already
+  approved in the Technical Plan. Restricting it further (e.g. to
+  Render's own private network) is real hardening work that belongs to
+  Sprint 9.3 ("Hardening & Blocking-Question Resolution",
+  `TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` §9) — it is a new decision
+  requiring its own verification against a live account, not a defect
+  in this sprint's own scope.
+- **No technical debt introduced by this sprint's own three touched
+  files** (`render.yaml`, `config.py`, `session.py`): no `TODO`/`FIXME`,
+  no dead code, no duplicated configuration, confirmed by direct
+  inspection.
+- **Everything else in the original Final Report's hedged statements**
+  (no Render account available; provisional `.onrender.com` domain
+  names; the real production smoke test) genuinely requires a live
+  Render account this environment does not have — correctly left as
+  the user's own next step, not something resolvable by further code
+  or documentation changes.
+
 ### Confirmation
 
 This sprint delivers a complete, internally-verified `render.yaml` and
 the two small backend changes it depends on — but **does not** deploy
 TradeOS to Render. No Render account is available in this environment.
 Applying this Blueprint to a real Render account, resolving the
-`.onrender.com` domains it currently references provisionally, running
-the equivalent smoke test against the real managed database, and
-amending `TRADEOS_SYSTEM_ARCHITECTURE.md` §12.1 / `TRADEOS_TECHNICAL_STACK.md`
-§13 to record Render as the platform actually in use (rather than only
-the class) all remain the user's own next steps — not claimed as done
-here. `GET /readyz` remains explicitly deferred, not implemented. No
+`.onrender.com` domains it currently references provisionally, and
+running the equivalent smoke test against the real managed database
+all remain the user's own next steps — not claimed as done here.
+`GET /readyz` remains explicitly deferred, not implemented. No
 `git push` was run at any point.

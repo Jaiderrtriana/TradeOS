@@ -311,7 +311,7 @@ No frozen document names a code-hosting platform or CI provider. GitHub Actions 
 
 ## 13. Deployment Targets
 
-Per this document's own mandate (Section 4) and the user's explicit instruction, **no specific cloud provider is chosen here** — `TRADEOS_SYSTEM_ARCHITECTURE.md` Section 12.1 commits only to a *class* of managed platform, and this document preserves exactly that level of commitment.
+Per this document's own mandate (Section 4) and the user's explicit instruction, **no specific cloud provider is chosen here** — `TRADEOS_SYSTEM_ARCHITECTURE.md` Section 12.1 commits only to a *class* of managed platform, and this document preserves exactly that level of commitment. **Render was operationally selected within this class in Sprint 9.2** (`CHANGELOG.md`; `render.yaml` at the repo root) — the table below still describes the class-level commitment this document is scoped to, not a rewrite of it; `render.yaml` is the concrete, currently-in-use instantiation of the "Production" row for whichever fields Render specifically requires (`dockerCommand`, `healthCheckPath`, `preDeployCommand`).
 
 | Environment | Target |
 |---|---|
