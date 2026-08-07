@@ -1,0 +1,69 @@
+# TradeOS — Render Blueprint (Infrastructure as Code)
+# Sprint 9.2 (docs/09_TRADEOS_IMPLEMENTATION_MASTER_PLAN.md §9) — Plan Técnico v4, aprobado.
+#
+# No modifica el Dockerfile de Sprint 9.1: `dockerCommand` abajo es la única
+# forma Render-específica de resolver el puerto dinámico ($PORT) sin acoplar
+# el Dockerfile (portable) a esta plataforma. Ver ese archivo para el CMD
+# original, sin cambios, que sigue usando `docker-compose.container.yml`.
+#
+# healthCheckPath apunta a /healthz (liveness), no a un /readyz — decisión
+# explícita: Sprint 9.2 NO amplía el contrato aprobado en Sprint 9.1
+# (docs/06_TRADEOS_API_SPECIFICATION.md §6.0). Riesgo residual aceptado:
+# una instancia con conectividad rota a PostgreSQL pasaría igualmente este
+# check. Aceptado dado TRADEOS_PRODUCT_BIBLE.md NFR 10.4 (disponibilidad
+# modesta, un solo usuario). /readyz queda diferido a un sprint futuro.
+databases:
+  - name: tradeos-db
+    plan: basic-256mb
+    postgresMajorVersion: "16"   # paridad con backend/docker-compose.yml y la validación de Sprint 9.1
+    databaseName: tradeos
+
+services:
+  - name: tradeos-backend
+    type: web
+    runtime: docker
+    plan: starter
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    dockerCommand: sh -c 'exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}'
+    healthCheckPath: /healthz
+    preDeployCommand: python scripts/migrate.py
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: { name: tradeos-db, property: connectionString }
+      - key: DATABASE_SSL_REQUIRED
+        value: "true"
+      - key: JWT_SECRET_KEY
+        sync: false   # se fija manualmente en el dashboard de Render, nunca en este archivo
+      - key: CORS_ALLOWED_ORIGINS
+        # Formato obligatorio: array JSON en texto. Render solo entrega
+        # strings (render.com/docs/configure-environment-variables); un
+        # string plano aquí rompe el arranque del backend (SettingsError
+        # en pydantic-settings al parsear un list[str]). Verificado
+        # empíricamente contra app/platform/config.py.
+        value: '["https://tradeos-frontend.onrender.com"]'
+
+  - name: tradeos-frontend
+    type: web
+    runtime: static
+    rootDir: frontend
+    # corepack fija la misma versión de pnpm usada en desarrollo local
+    # (pnpm-lock.yaml, lockfileVersion 9.0). --frozen-lockfile garantiza
+    # build reproducible. El passthrough explícito VITE_API_BASE_URL=$VITE_API_BASE_URL
+    # sigue el patrón oficial de Render para garantizar que una variable
+    # llegue al build de un Static Site (render.com/docs/deploy-create-react-app,
+    # ejemplo: `REACT_APP_RENDER_GIT_COMMIT=$RENDER_GIT_COMMIT yarn build`).
+    buildCommand: corepack enable && corepack prepare pnpm@11.10.0 --activate && pnpm install --frozen-lockfile && VITE_API_BASE_URL=$VITE_API_BASE_URL pnpm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://tradeos-backend.onrender.com/api/v1
+    routes:
+      # SPA fallback: frontend/src/App.tsx usa BrowserRouter (routing por
+      # historial). Sin esto, navegar directo a /trades o refrescar en
+      # cualquier ruta no-raíz devuelve 404 en un host estático puro.
+      # Render no aplica esta regla a rutas donde ya existe un archivo real
+      # (los assets de Vite bajo /assets/* se sirven normalmente).
+      - source: /*
+        destination: /index.html
+        type: rewrite

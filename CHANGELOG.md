@@ -4597,3 +4597,197 @@ actually permit declaring the deployment portion of the roadmap
 finished — this sprint closes the containerization and bootstrap-
 separation work, not the deployment itself. No `git push` was run at
 any point.
+
+## Sprint 9.2 — Frontend Static Hosting & TLS (Render)
+
+Phase 9 (Deployment & Production Hardening), second sprint
+(`TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` §9). Preceded by a full Fase
+1-3 review cycle (documentary audit, contradiction check, Technical
+Plan) plus three independent, adversarial technical-review rounds on
+the Plan Técnico before implementation began — a heavier gate than any
+prior sprint, reflecting that this is the first sprint committing to a
+real, paid, external hosting provider (Render) rather than local-only
+validation.
+
+### Decision: Render, chosen from the class already named in frozen docs
+
+`TRADEOS_SYSTEM_ARCHITECTURE.md` §12.1 and `TRADEOS_TECHNICAL_STACK.md`
+§13 deliberately commit only to a *class* of managed platform
+("Railway/Fly.io/Render-equivalent"), never a vendor. Render was
+selected (user decision) because one provider covers all three pieces
+TradeOS needs — Docker web service, managed PostgreSQL, and a static
+site with SPA-rewrite support — with automatic, free TLS on every
+service. This sprint's `render.yaml` targets the `basic-256mb` Postgres
+plan and the `starter` web-service plan specifically because Render's
+free tiers were disqualified for concrete, cited reasons: free web
+services spin down after 15 minutes of inactivity, and free Postgres
+instances are automatically deleted after a fixed trial period —
+unacceptable for a database that becomes the user's permanent trading
+journal. Approximate cost: $7/mo (web service) + $6/mo (Postgres) ≈
+$13/mo; the Static Site itself carries no separate plan cost.
+
+**No real Render deployment was performed in this sprint** — no Render
+account/credentials are available in this environment. `render.yaml`
+is complete, IaC-correct Blueprint configuration, verified against
+Render's own official documentation (not memory) for every field used.
+Everything verifiable without an actual Render account was verified
+empirically, described below. Actually applying this Blueprint to a
+live Render account, and the resulting real-infrastructure smoke test,
+remain the user's own next manual step.
+
+### Decision: `/healthz` stays liveness-only; `/readyz` explicitly deferred
+
+Render's `healthCheckPath` gates traffic cutover during zero-downtime
+deploys — a *readiness* concern. The Technical Plan initially proposed
+introducing `GET /readyz` (checking real PostgreSQL connectivity) to
+close that gap, which a review round correctly flagged as a scope
+change relative to Sprint 9.1's explicit, approved contract ("`/healthz`
+= liveness, no readiness yet"). Resolved by explicit architectural
+decision, not by silent omission: `healthCheckPath: /healthz` is kept
+for this sprint; `/readyz` is deferred to a future sprint. The residual
+risk — an instance with broken database connectivity would still pass
+`/healthz` and receive real traffic — is accepted explicitly, justified
+by `TRADEOS_PRODUCT_BIBLE.md` NFR 10.4 (single-user, modest availability)
+and by Architectural Principle 4 (don't build infrastructure ahead of a
+demonstrated need). `/healthz`'s contract (`docs/06...md` §6.0) is
+completely unchanged — this sprint adds no new endpoint.
+
+### Decision: the Dockerfile from Sprint 9.1 is untouched
+
+Rendering the dynamic `$PORT` Render assigns required *some* mechanism
+to substitute an environment variable into the startup command — but
+Docker's exec-form `CMD` (`["uvicorn", ...]`, already approved in 9.1)
+performs no shell substitution at all. The first fix considered was
+changing the Dockerfile's own `CMD` to a shell form; a review round
+correctly rejected this because a bare `sh -c "uvicorn ..."` demotes
+uvicorn from PID 1 to a child of the shell — `docker stop` (and
+Render's own instance-recycling on every deploy) sends `SIGTERM` to
+PID 1, and `dash`/`sh` on `python:3.12-slim` does not forward it to
+children by default, so uvicorn would never receive it and get hard-
+killed by `SIGKILL` after the grace period, dropping in-flight
+requests on every single deploy. Resolved by keeping the Dockerfile's
+`CMD` completely unmodified and instead declaring, in `render.yaml`
+only:
+
+    dockerCommand: sh -c 'exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}'
+
+`exec` inside the `sh -c` replaces the shell process via `execve`
+rather than forking a child — uvicorn ends up as PID 1 regardless,
+receiving `SIGTERM` natively. Render's own docs confirm `dockerCommand`
+overriding the Dockerfile `CMD`, and its own multi-command guidance
+("provide them to `/bin/sh -c`") sanctions exactly this pattern. Net
+effect: the Sprint 9.1 Dockerfile — and its own local validation via
+`docker-compose.container.yml` — needed zero changes.
+
+### Decision: `CORS_ALLOWED_ORIGINS` must be a JSON array string
+
+Render's own docs state environment variable values "are always
+strings" — there is no native list type. `app/platform/config.py`'s
+`cors_allowed_origins: list[str]` is parsed by pydantic-settings as
+JSON. Verified empirically this sprint (see Verification): a plain
+string value raises `SettingsError`/`JSONDecodeError` at import time —
+`settings = Settings()` runs at module load, so a malformed value would
+crash the entire backend on boot. `render.yaml` sets the value as
+`'["https://tradeos-frontend.onrender.com"]'` — a JSON array encoded as
+one string — which parses correctly.
+
+### Decision: explicit `DATABASE_SSL_REQUIRED` flag, not URL parsing
+
+SQLAlchemy's `asyncpg` dialect does not translate a `?sslmode=require`
+query parameter on the connection URL — it passes `sslmode` straight
+through to `asyncpg.connect()`, which raises `TypeError` (a documented,
+open issue on SQLAlchemy's own repository, `sqlalchemy/sqlalchemy#6275`).
+Rather than parsing or rewriting whatever connection string Render's
+`fromDatabase.connectionString` produces, this sprint adds one explicit,
+boolean settings field.
+
+### Added
+- `render.yaml` (repo root) — Blueprint IaC for `tradeos-db` (Postgres
+  16, matching `backend/docker-compose.yml` and Sprint 9.1's own
+  validation, not a newer untested major version), `tradeos-backend`
+  (Docker web service, `dockerCommand`, `preDeployCommand: python
+  scripts/migrate.py`, `healthCheckPath: /healthz`), and
+  `tradeos-frontend` (Static Site, `corepack`-pinned `pnpm@11.10.0`,
+  `--frozen-lockfile`, SPA rewrite `/* -> /index.html` for
+  `frontend/src/App.tsx`'s `BrowserRouter`).
+
+### Modified
+- `backend/app/platform/config.py` — new field `database_ssl_required:
+  bool = False`. Default preserves local-dev behavior exactly.
+- `backend/app/platform/db/session.py` — `connect_args={"ssl": "require"}`
+  passed to `create_async_engine` only when `database_ssl_required` is
+  true; empty dict (today's exact behavior) otherwise.
+
+### Explicitly not changed
+`backend/Dockerfile`, `backend/docker-compose.container.yml`,
+`backend/scripts/migrate.py`, `backend/scripts/bootstrap.py`,
+`backend/scripts/seed_configuration.py`, and every API contract,
+Domain Model class, and Use Case — confirmed via `git diff --stat`
+before implementation and re-confirmed after.
+
+### Verification performed
+
+- **Regression:** `pytest` — 357 passed (unchanged from Sprint 9.1).
+  `ruff check` — clean. `ruff format --check` — clean except the same
+  one pre-existing, unrelated file from Sprint 8.1. `mypy` — same 9
+  pre-existing, unrelated errors in the same 4 files as every prior
+  round; none in `config.py` or `session.py`. Frontend: `tsc -b
+  --noEmit` — clean. `vitest` — 93 passed (16 files). `eslint` — clean.
+  `prettier --check` — 24 pre-existing warnings in
+  `src/features/trading/*`, confirmed via `git status` to be untouched
+  by this sprint (unrelated pre-existing debt, same pattern as the
+  backend's own known formatting debt).
+- **`dockerCommand` / PID 1 / signal handling, verified empirically, not
+  assumed:** built the (unchanged) Sprint 9.1 image, ran it directly
+  with the exact `render.yaml` `dockerCommand` string and `PORT=9000`.
+  `/proc/1/cmdline` inside the container showed
+  `/usr/local/bin/python3.12 /usr/local/bin/uvicorn ... --port 9000` —
+  uvicorn genuinely PID 1, `$PORT` correctly substituted. `docker stop`
+  (SIGTERM) completed in 0.77s with the full graceful sequence in the
+  logs (`Shutting down` → `Waiting for application shutdown` →
+  `Application shutdown complete` → `Finished server process [1]`) —
+  no `SIGKILL` needed.
+- **`CORS_ALLOWED_ORIGINS` / `DATABASE_SSL_REQUIRED`, verified
+  empirically:** a plain string value for `CORS_ALLOWED_ORIGINS`
+  reproduces the exact `SettingsError` predicted; the JSON-array format
+  used in `render.yaml` parses to `list[str]` correctly.
+  `DATABASE_SSL_REQUIRED=true` yields `connect_args={"ssl": "require"}`;
+  its absence (today's local dev) yields `connect_args={}`, byte-for-
+  byte the pre-Sprint-9.2 behavior.
+- **`VITE_API_BASE_URL` baked at build time, verified empirically, not
+  assumed:** ran `VITE_API_BASE_URL=https://tradeos-backend.onrender.com/api/v1
+  pnpm run build` and grepped the resulting bundle — the literal URL
+  string is present in `dist/assets/index-*.js`. Resolves the one
+  uncertainty a review round explicitly required closed rather than
+  left open in the Technical Plan.
+- **Full container smoke test**, same isolated `docker-compose.container.yml`
+  stack as Sprint 9.1, `docker build`/`docker compose up` with zero
+  changes: `migrate.py` (all 12 revisions apply cleanly) → register a
+  real user → `seed_configuration.py --user-id <uuid>` (published `v1.0`)
+  → `POST /trades` with `status: "planned"` → **201** → `DELETE
+  /trades/{id}` → **204** (soft-delete) → `GET /trades` confirms an
+  empty list. Deliberately uses the `planned`/soft-delete path rather
+  than leaving synthetic trade data behind, since this sprint's
+  container-validation database is structurally the same kind of
+  database (managed Postgres) the user's real trading data will live
+  in once actually deployed — unlike Sprint 9.1's throwaway local
+  container, "smoke test residue" here is not free to ignore.
+- **Dev environment integrity:** `backend-postgres-1` and its volume
+  (`backend_tradeos_postgres_data`) confirmed untouched throughout,
+  exactly as in Sprint 9.1 — the isolated `name:
+  tradeos-container-validation` project continues to prevent any
+  collision.
+
+### Confirmation
+
+This sprint delivers a complete, internally-verified `render.yaml` and
+the two small backend changes it depends on — but **does not** deploy
+TradeOS to Render. No Render account is available in this environment.
+Applying this Blueprint to a real Render account, resolving the
+`.onrender.com` domains it currently references provisionally, running
+the equivalent smoke test against the real managed database, and
+amending `TRADEOS_SYSTEM_ARCHITECTURE.md` §12.1 / `TRADEOS_TECHNICAL_STACK.md`
+§13 to record Render as the platform actually in use (rather than only
+the class) all remain the user's own next steps — not claimed as done
+here. `GET /readyz` remains explicitly deferred, not implemented. No
+`git push` was run at any point.

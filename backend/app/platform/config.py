@@ -14,6 +14,16 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://tradeos:tradeos@localhost:5432/tradeos"
 
+    # Sprint 9.2 (Render deployment): SQLAlchemy's asyncpg dialect does not
+    # translate a `?sslmode=require` URL query parameter — passing it
+    # straight to `create_async_engine()` raises a TypeError inside
+    # asyncpg.connect() (sqlalchemy/sqlalchemy#6275). Managed PostgreSQL
+    # requiring SSL is therefore signaled by this explicit flag, not by
+    # parsing `database_url`, and consumed via `connect_args` in
+    # app/platform/db/session.py. Default False: zero behavior change for
+    # local development (backend/docker-compose.yml's Postgres has no TLS).
+    database_ssl_required: bool = False
+
     # TRADEOS_SYSTEM_ARCHITECTURE.md ADR-07 (token-based auth). Default is a
     # dev-only placeholder — TRADEOS_SYSTEM_ARCHITECTURE.md §11.1 requires
     # secrets be injected via environment configuration, never committed;
