@@ -5208,15 +5208,17 @@ confirmed on the first real CI run.
 
 ### Decision: `GITHUB_TOKEN` least privilege
 Verified against GitHub's own Security Hardening Guide for GitHub
-Actions before assigning any permission. `backend-ci.yml` and
-`frontend-ci.yml` declare only `contents: read` — confirmed sufficient,
-since checkout, Poetry/pipx, `pnpm/setup`, and every lint/test/build/audit
-step in both never call the GitHub API. `container-scan.yml` additionally
-needs `security-events: write` for `upload-sarif`, plus `actions: read`
-specifically because this repository is private (`gh repo view` confirms
-`"visibility":"PRIVATE"`) — the codeql-action documentation names that
-extra requirement explicitly for private repositories. No workflow is
-granted write access to repository contents.
+Actions before assigning any permission. All three workflows —
+`backend-ci.yml`, `frontend-ci.yml`, and `container-scan.yml` — declare
+only `contents: read`. `container-scan.yml` was originally given
+`security-events: write` and `actions: read` for `upload-sarif`, on the
+assumption that a private repository just needed those two extra scopes.
+A dedicated pre-push review (below, "Corrección post-implementación")
+found that assumption wrong — those permissions are necessary but not
+sufficient, since GitHub Code Security itself is unavailable for this
+repository regardless of permissions granted. Once the SARIF destination
+changed to a plain workflow artifact, neither extra permission is needed
+at all. No workflow is granted write access to repository contents.
 
 ### Decision: `actions/checkout` hardening
 `persist-credentials: false` in all three workflows — GitHub's own
@@ -5234,12 +5236,13 @@ full-length commit SHA is currently the only way to use an action as an
 immutable release"). Every SHA used
 (`actions/checkout@3d3c42e...` v7.0.1, `actions/setup-python@5fda3b9...`
 v7.0.0, `pnpm/setup@4700d73...` v2.0.1, `aquasecurity/trivy-action@ed142fd...`
-v0.36.0, `github/codeql-action/upload-sarif@5595cca...` v4.37.6) was
-fetched directly from each repository's real tag list via the GitHub
-API (`gh api repos/<owner>/<repo>/tags`), not typed from memory or
-invented. `.github/dependabot.yml`'s `github-actions` ecosystem entry
-keeps these updated via reviewed PRs going forward, rather than pinned
-forever.
+v0.36.0, `actions/upload-artifact@043fb46...` v7.0.1) was fetched
+directly from each repository's real tag list via the GitHub API
+(`gh api repos/<owner>/<repo>/tags`), not typed from memory or invented.
+`.github/dependabot.yml`'s `github-actions` ecosystem entry keeps these
+updated via reviewed PRs going forward, rather than pinned forever.
+(`github/codeql-action/upload-sarif` was pinned and then removed — see
+"Corrección post-implementación" below.)
 
 ### Decision: `pypa/gh-action-pip-audit` not used; `poetry run pip-audit` instead
 The official `pip-audit` GitHub Action expects a `requirements.txt`-style
@@ -5260,6 +5263,61 @@ there is no frontend Docker image for Trivy to scan. `container-scan.yml`
 builds `backend/Dockerfile` locally (tagged by commit SHA, never pushed
 to any registry — out of this sprint's explicit scope) purely so Trivy
 has something to scan, then discards it.
+
+### Corrección post-implementación: `upload-sarif` reemplazado por un artifact de workflow
+
+Un revisión final pre-`git push`, centrada exclusivamente en verificar
+esquemas de Actions y compatibilidad de versiones, encontró que
+`container-scan.yml`'s último paso (`github/codeql-action/upload-sarif`)
+casi con certeza fallaría en su primera ejecución real — no por un error
+de sintaxis, sino porque nunca se había verificado si este repositorio
+concreto puede realmente usar GitHub Code Security.
+
+**Investigación, no suposición:**
+- Documentación oficial de GitHub (`docs.github.com`, "About GitHub
+  Advanced Security"): *"You must be on a GitHub Team or GitHub
+  Enterprise plan in order to purchase GitHub Code Security."* Team y
+  Enterprise son planes de organización — no existen para cuentas
+  personales.
+- Este repositorio pertenece a una cuenta de tipo `User` (`gh api
+  repos/Jaiderrtriana/TradeOS --jq '.owner.type'` → `"User"`), no a una
+  organización.
+- Verificación empírica, no solo inferencia a partir de `security_and_analysis: null`:
+  `gh api repos/Jaiderrtriana/TradeOS/code-scanning/alerts` y
+  `.../code-scanning/default-setup` devuelven ambos, hoy, contra el
+  repositorio real: `403 "Code scanning is not enabled for this
+  repository. Please enable code scanning in the repository settings."`
+- Documentación oficial de troubleshooting (`docs.github.com`,
+  "Advanced Security must be enabled"): confirma que este es exactamente
+  el error que produce `upload-sarif` en este escenario, y que la única
+  resolución que GitHub documenta es cambiar de plan o hacer el
+  repositorio público — no ofrece ninguna alternativa de subida
+  alternativa a la pestaña Security.
+
+**Corrección aplicada, alcance mínimo, tres cambios exclusivamente en `container-scan.yml`:**
+1. Eliminado el paso `github/codeql-action/upload-sarif` — su
+  dependencia real (GitHub Code Security) no está disponible para este
+  repositorio, no es un problema de configuración corregible dentro del
+  workflow.
+2. Añadido `actions/upload-artifact@043fb46...` (v7.0.1) para subir el
+  mismo `trivy-results.sarif` como artifact descargable del run — sin
+  necesitar ninguna licencia ni permiso adicional de `GITHUB_TOKEN`.
+3. `permissions:` de `container-scan.yml` reducido a solo `contents:
+  read` (se retiran `security-events: write` y `actions: read`, que
+  existían únicamente para el paso eliminado).
+
+**Corrección adicional, mismo archivo:** el paso SARIF de Trivy ahora
+incluye `limit-severities-for-sarif: 'true'`. Sin este input, verificado
+leyendo el `entrypoint.sh` real de `trivy-action@v0.36.0`, la propia
+Action descarta el filtro `severity: 'CRITICAL,HIGH'` para el formato
+SARIF específicamente y sube todas las severidades sin excepción — un
+hallazgo separado, no bloqueante para el primer run, pero que sí
+contradecía lo que el workflow decía hacer.
+
+El paso bloqueante de Trivy (formato tabla, `exit-code: '1'`,
+`severity: 'CRITICAL,HIGH'`) permanece exactamente igual — Trivy sigue
+siendo completamente funcional y sigue fallando el build ante hallazgos
+CRITICAL/HIGH, que era el requisito no negociable de esta corrección.
 
 ### Files added
 - `.github/dependabot.yml`

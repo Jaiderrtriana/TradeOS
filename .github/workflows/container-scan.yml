@@ -18,17 +18,22 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Distinto de backend-ci.yml/frontend-ci.yml: este workflow SÍ necesita
-# más que `contents: read`, porque sube el resultado de Trivy a la
-# pestaña Security de GitHub. `security-events: write` es obligatorio
-# para upload-sarif; `actions: read` se suma porque este repositorio es
-# privado (confirmado: `gh repo view` → "visibility":"PRIVATE") — la
-# documentación oficial de codeql-action distingue explícitamente ese
-# requisito adicional para repos privados (Fase 3.3).
+# Sin `security-events: write` / `actions: read`: este repositorio es
+# privado y pertenece a una cuenta personal (no una organización), y
+# GitHub Code Security / Advanced Security — requisito real de
+# `upload-sarif` — no está disponible para repositorios privados fuera
+# de un plan GitHub Team o Enterprise (docs.github.com, "About GitHub
+# Advanced Security": "You must be on a GitHub Team or GitHub Enterprise
+# plan in order to purchase GitHub Code Security"). Verificado de forma
+# concluyente, no asumido, contra la API real de este repositorio:
+# `gh api repos/.../code-scanning/alerts` y `.../code-scanning/default-setup`
+# devuelven ambos 403 "Code scanning is not enabled for this repository."
+# Por eso no se sube nada a la pestaña Security — ver la decisión de
+# Trivy más abajo para el reemplazo (artifact de workflow, sin licencia
+# requerida). `contents: read` sigue siendo suficiente para todo lo demás
+# que este workflow hace.
 permissions:
   contents: read
-  actions: read
-  security-events: write
 
 jobs:
   container-scan:
@@ -56,9 +61,19 @@ jobs:
           exit-code: "1"
 
       # Segunda pasada, en SARIF, siempre ejecutada (incluso si la
-      # anterior ya falló el job) para que el hallazgo quede visible en
-      # la pestaña Security de GitHub, no solo en el log de este job.
-      - name: Trivy scan (SARIF for Security tab)
+      # anterior ya falló el job) para conservar un reporte estructurado
+      # y descargable — no se sube a la pestaña Security de GitHub
+      # (requiere GitHub Code Security, no disponible en este repositorio
+      # privado de cuenta personal; ver justificación completa en el
+      # bloque `permissions:` de arriba).
+      #
+      # limit-severities-for-sarif: 'true' es obligatorio para que el
+      # SARIF realmente respete `severity: CRITICAL,HIGH` — verificado
+      # leyendo el entrypoint.sh real de trivy-action@v0.36.0: sin este
+      # input, la propia Action descarta el filtro de severidad para
+      # formato SARIF y sube todas las severidades sin excepción
+      # ("Building SARIF report with all severities").
+      - name: Trivy scan (SARIF artifact)
         if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -66,10 +81,17 @@ jobs:
           format: "sarif"
           output: "trivy-results.sarif"
           severity: "CRITICAL,HIGH"
+          limit-severities-for-sarif: "true"
           exit-code: "0"
 
-      - name: Upload SARIF to Security tab
+      # actions/upload-artifact no requiere ningún permiso especial de
+      # GITHUB_TOKEN ni licencia — es la alternativa que no depende de
+      # GitHub Code Security. El reporte queda descargable desde la
+      # página del run durante 90 días (retención por defecto de GitHub).
+      - name: Upload SARIF as workflow artifact
         if: always()
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          sarif_file: "trivy-results.sarif"
+          name: trivy-results-sarif
+          path: trivy-results.sarif
+          if-no-files-found: error
