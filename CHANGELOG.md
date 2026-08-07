@@ -4800,7 +4800,12 @@ and confirmed several other points that were already correct:
   `autoDeploy` → `autoDeployTrigger`, `afterFirstDeployCommand` →
   `initialDeployHook`, `previewsEnabled`/`pullRequestPreviewsEnabled` →
   `previews.generation`). No change needed — confirmed clean, not
-  assumed clean.
+  assumed clean. **Scope of this confirmation, stated precisely:** this
+  verifies conformance with Render's published specification, not that
+  the Blueprint deploys successfully — that operational validation
+  (`render blueprint validate`, if the chosen workflow supports it, or
+  the first real deploy itself) remains pending a live Render account,
+  same as the rest of this sprint's deployment-execution items.
 - **Deploy-ordering, checked, not assumed:** confirmed via Render's own
   Blueprint documentation that a service's `fromDatabase`/`fromService`
   reference creates an automatic provisioning order — `tradeos-db` is
