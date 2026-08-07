@@ -5053,7 +5053,10 @@ claimed as achieved — it requires the containerized backend and static
 frontend actually running on Render against a real managed database,
 which remains pending the user's own account setup (Sprint 9.1/9.2's
 own stated pending items, unchanged by this sprint). What this sprint
-does close: every Section 16 blocking Open Question is now either
-resolved (OQ-1, OQ-3, OQ-4) or was already not applicable, and secrets
-management has no remaining gap this project's current single-user
-scale requires closing. No `git push` was run at any point.
+does close: based on the architectural decisions documented up to this
+point in the project, OQ-1, OQ-3, and OQ-4 each have a documented
+resolution in their respective reference documents (this sprint did
+not re-audit the full, current state of Master Plan §16 itself — that
+was outside this sprint's scope). Secrets management has no remaining
+gap this project's current single-user scale requires closing. No
+`git push` was run at any point.
