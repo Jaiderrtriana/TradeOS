@@ -1,0 +1,105 @@
+# TradeOS — Backend CI (Sprint 9.4, Deployment Readiness & Operational
+# Hardening). Plan Técnico v1 + verificaciones adicionales (Fase 3.1-3.3):
+# ruff/mypy/pytest ya documentados como estándar del proyecto
+# (TRADEOS_TECHNICAL_STACK.md §11-12); esta es su primera ejecución
+# automatizada — hasta ahora solo se corrían manualmente por sprint.
+#
+# Separado de frontend-ci.yml y container-scan.yml (no un único ci.yml):
+# el filtro `paths` de abajo es un mecanismo nativo de GitHub Actions que
+# un solo workflow con jobs no puede replicar sin una Action de terceros
+# (docs.github.com/actions/using-workflows/triggering-a-workflow) — un
+# cambio que solo toca frontend/ nunca dispara este workflow.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+
+# Patrón oficial (docs.github.com/en/actions/using-jobs/using-concurrency):
+# un nuevo push al mismo PR/rama cancela la ejecución anterior todavía en
+# curso, en vez de gastar minutos de runner en un commit ya obsoleto.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# GITHUB_TOKEN de mínimo privilegio (docs.github.com — Security hardening
+# for GitHub Actions): ningún paso de este workflow llama a la API de
+# GitHub ni necesita escribir en el repositorio.
+permissions:
+  contents: read
+
+jobs:
+  backend-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Poetry.io recomienda pipx explícitamente como "top choice" para
+      # CI (python-poetry.org/docs/#installation) — preferido sobre la
+      # Action de terceros snok/install-poetry, que esa misma
+      # documentación oficial no menciona (Fase 3.2). Versión fijada a
+      # 2.4.1: backend/poetry.lock declara en su propia cabecera "generated
+      # by Poetry 2.4.1" — cualquier otra versión arriesga un formato de
+      # lockfile distinto al committeado.
+      - name: Install Poetry
+        run: pipx install poetry==2.4.1
+
+      # cache: 'poetry' es soporte nativo de esta Action
+      # (actions/setup-python — Advanced usage: "Supported package
+      # managers are pip, pipenv and poetry"); Poetry debe instalarse
+      # antes de este paso para que pueda localizar poetry.lock.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: "poetry"
+          # `uses:` steps don't inherit `defaults.run.working-directory`
+          # (that only applies to `run:` steps) — without this, the cache
+          # key would be computed against a nonexistent root-level
+          # poetry.lock instead of backend/poetry.lock.
+          cache-dependency-path: backend/poetry.lock
+
+      - name: Install dependencies
+        run: poetry install --no-interaction
+
+      - name: Ruff format check
+        run: poetry run ruff format --check .
+
+      - name: Ruff lint
+        run: poetry run ruff check .
+
+      - name: mypy
+        run: poetry run mypy .
+
+      # Testcontainers levanta un Postgres efímero real (backend/tests/conftest.py)
+      # — ubuntu-latest trae Docker Server/Client preinstalado
+      # (actions/runner-images, release ubuntu24/20260209.23), el único
+      # requisito que Testcontainers documenta para CI; no hace falta
+      # ningún paso adicional de Docker-in-Docker (Fase 3.1).
+      - name: pytest
+        run: poetry run pytest
+
+      # Report-only, deliberadamente: pip-audit no soporta ningún filtro
+      # de severidad (never implemented upstream, solicitud abierta) — es
+      # binario, falla ante cualquier hallazgo. Verificado empíricamente
+      # en esta misma Fase 4: 12 vulnerabilidades ya existentes en
+      # dependencias actuales (cryptography, ecdsa, pytest, starlette),
+      # ninguna introducida por este sprint. Bloquear el build por ellas
+      # excedería el alcance de este sprint (infraestructura de CI, no
+      # actualización de dependencias) — decisión explícita del usuario.
+      # Ver CHANGELOG.md, Sprint 9.4, para el detalle completo.
+      - name: pip-audit (report-only)
+        run: poetry run pip-audit
+        continue-on-error: true

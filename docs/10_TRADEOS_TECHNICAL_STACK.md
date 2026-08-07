@@ -1,8 +1,8 @@
 # 10_TRADEOS_TECHNICAL_STACK.md
 
 **Document Status:** CANONICAL AND FROZEN — the official technical stack and engineering standard of TradeOS.
-**Version:** 1.0
-**Last Updated:** 2026-07-25
+**Version:** 1.1
+**Last Updated:** 2026-08-07
 **Depends On:** all nine prior frozen documents — `PROJECT_AUDIT.md`, `TRADEOS_PRODUCT_BIBLE.md` v2.1, `TRADEOS_DOMAIN_MODEL.md` v1.1, `TRADEOS_SYSTEM_ARCHITECTURE.md` v1.2, `TRADEOS_DATABASE_DESIGN.md` v1.1, `TRADEOS_API_SPECIFICATION.md` v1.1, `TRADEOS_FRONTEND_BLUEPRINT.md` v1.1, `TRADEOS_BACKEND_BLUEPRINT.md` v1.1, `TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` v1.0 (all frozen).
 **Redesigns:** nothing. Every technology named here either (a) restates a decision already frozen upstream — FastAPI, Python, PostgreSQL, React + TypeScript, REST/JSON, JWT auth, pytest — with no change, or (b) fills a genuine gap those documents left at the "class of tool" level (e.g., "a database migration tool" without naming one) with exactly one official choice and a citable rationale. Where a choice would require reopening an already-frozen decision, it is registered as an Open Question (Section 20) instead.
 **Is Not:** an architecture document, a redesign of the Domain Model/Database Design/API Specification/Frontend or Backend Blueprints, or a restatement of the Implementation Master Plan's phases and sequencing. This document answers *which tools and conventions*, never *what the system is* or *in what order it is built*.
@@ -15,6 +15,7 @@
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 2026-07-25 | Initial Technical Stack. Restated every technology decision already frozen upstream (FastAPI, Python, PostgreSQL, React + TypeScript, REST/JSON, JWT, pytest, Alembic) without alteration, and made exactly one official selection — with rationale, alternatives considered, and explicit rejections — for every tooling category the prior nine documents left open at the "class of tool" level (build tool, ORM, state management, styling, testing tools, linters, CI/CD, security tooling). Registered four genuine, previously-unaddressed Open Questions (Section 20) rather than inventing answers for them. |
+| 1.1 | 2026-08-07 | Sprint 9.4 (Deployment Readiness & Operational Hardening). Section 20: resolved OQ-8 — GitHub is confirmed as the code-hosting platform (`git remote -v`, `CHANGELOG.md`). Section 12: recorded that the CI pipeline (linting, type-checking, unit/integration tests, build) is now implemented via three separate GitHub Actions workflows, covering a documented subset of this section's own described pipeline (no Playwright E2E stage, no staging auto-deploy, no production approval gate — all remain future work). Section 14: recorded that Dependabot and the `pip-audit`/`pnpm audit`/Trivy vulnerability scanners, previously chosen but unimplemented, are now wired into that same CI. Neither change alters any technology selection already made in this document — both are implementation-status notes on decisions already frozen. |
 
 **Status:** FROZEN. This is the tenth document of TradeOS, after `PROJECT_AUDIT.md`, `TRADEOS_PRODUCT_BIBLE.md`, `TRADEOS_DOMAIN_MODEL.md`, `TRADEOS_SYSTEM_ARCHITECTURE.md`, `TRADEOS_DATABASE_DESIGN.md`, `TRADEOS_API_SPECIFICATION.md`, `TRADEOS_FRONTEND_BLUEPRINT.md`, `TRADEOS_BACKEND_BLUEPRINT.md`, and `TRADEOS_IMPLEMENTATION_MASTER_PLAN.md`.
 **Next document:** to be determined — candidates named in Section 20 should be resolved before Phase 9 (Deployment) of the Implementation Master Plan is entered.
@@ -307,6 +308,11 @@ No frozen document names a code-hosting platform or CI provider. GitHub Actions 
 ### 12.2 Why a Manual Approval Gate for Production
 `TRADEOS_PRODUCT_BIBLE.md` NFR 10.4 confirms availability requirements are "modest" for a single-user system with "no fixed uptime guarantee beyond not losing data" — this is the lowest-risk, lowest-tooling-cost way to prevent an unreviewed change from reaching production, appropriate to that same modest-availability, single-maintainer context (Section 5, Principle 2).
 
+### 12.3 Current implementation status (Sprint 9.4, `CHANGELOG.md`)
+A documented **subset** of the Build/Test/Lint Pipeline rows above is now implemented, as three separate GitHub Actions workflows (`.github/workflows/backend-ci.yml`, `frontend-ci.yml`, `container-scan.yml`): install → lint → type-check → unit/integration tests → build, on every push and pull request, each scoped to its own `paths` filter. **Not yet implemented, still exactly as originally described above:** the Playwright E2E stage, the automatic staging deploy, and the manual-approval production gate — none of those were in this sprint's approved scope (`CHANGELOG.md`, Sprint 9.4: "Render deployment, Auto Deploy, Staging, Production deployment" explicitly excluded). This is an implementation-status note, not a change to the Build/Test/Lint Pipeline decisions themselves.
+
+All three workflows follow `GITHUB_TOKEN` least privilege (GitHub's own Security Hardening Guide for GitHub Actions): `backend-ci.yml` and `frontend-ci.yml` declare only `contents: read`; `container-scan.yml` adds `security-events: write` and `actions: read` solely because it uploads a SARIF file to this (private) repository's Security tab — no workflow is granted write access to repository contents.
+
 ---
 
 ## 13. Deployment Targets
@@ -341,6 +347,9 @@ All three are free, natively integrated with the already-selected GitHub Actions
 
 ### 14.3 HTTPS — Restated, Not New
 `TRADEOS_SYSTEM_ARCHITECTURE.md` Section 11.1 already states TLS is "not optional, not deferred." This section adds no new requirement — it exists only so this document is a complete reference without requiring a cross-reference for this one fact.
+
+### 14.4 Current implementation status (Sprint 9.4, `CHANGELOG.md`)
+Dependency Scanning and Vulnerability Scanning — **resolved, no longer only chosen-but-unimplemented.** `.github/dependabot.yml` covers all four ecosystems this repository has (`pip`, `npm`, `docker`, `github-actions`); `pip-audit`, `pnpm audit`, and Trivy now run as steps of `backend-ci.yml`/`frontend-ci.yml`/`container-scan.yml` respectively. This was previously blocked on Open Question OQ-8 (Section 20) — now resolved. Trivy and `pnpm audit` fail their build on `CRITICAL`/`HIGH` findings (the officially documented example configuration for each tool — see `CHANGELOG.md`, Sprint 9.4, for the full citation trail); `pip-audit` runs report-only, since it has no severity filter of its own to calibrate against the same threshold (confirmed against its own documentation: no `--min-severity` option exists), and blocking on any finding today would fail on vulnerabilities already present in dependencies before this sprint, unrelated to it. Security Headers and HTTPS Requirements: unchanged, already implemented in Sprint 9.3. Secret Management: unchanged, §14.1's reasoning still holds.
 
 ---
 
@@ -443,7 +452,8 @@ Filtered strictly to genuinely unresolved technical decisions — every other ch
 | OQ-5 | What exact Python patch/minor version does the existing reference implementation (`tradeos-backend`) currently target? | No frozen document pins one — this document recommends a floor (3.12+, Section 17) but cannot confirm the reference code's actual current interpreter version without inspecting it directly |
 | OQ-6 | What object storage provider holds Playbook Setup attachment files? | `TRADEOS_DATABASE_DESIGN.md` Section 6.16 confirms the *pattern* (a reference/key stored in Postgres, the file itself in "object storage") but names no specific provider or service — this document's file-upload approach (Section 6.12) is provider-agnostic until this resolves |
 | OQ-7 | Where does a user's display timezone come from — browser-detected, or a stored `Preferences` field? | `TRADEOS_DOMAIN_MODEL.md` Section 8.12 names theme/language/notification/display preferences but no explicit timezone field; local-time display of `entered_at`/`closed_at` (Section 6.10) cannot be fully implemented until this is decided |
-| OQ-8 | Is GitHub the confirmed code-hosting platform? | No frozen document names one — Section 12's GitHub Actions selection, and Dependabot (Section 14), both assume it as the most likely default, but this has never been explicitly confirmed upstream |
+
+**OQ-8 — resolved, Sprint 9.4 (`CHANGELOG.md`):** GitHub is the confirmed code-hosting platform. Verified directly against this repository's own configuration — `git remote -v` returns `origin git@github.com:Jaiderrtriana/TradeOS.git` for both fetch and push — rather than inferred or assumed. This confirms the "most likely default" Section 12.1 and Section 14.2 already assumed, and unblocks both: the GitHub Actions CI/CD pipeline (Section 12.3) and Dependabot plus the vulnerability scanners (Section 14.4) are now implemented on that confirmed basis.
 
 ---
 
@@ -452,5 +462,6 @@ Filtered strictly to genuinely unresolved technical decisions — every other ch
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 2026-07-25 | Initial Technical Stack. Restated all previously-frozen technology decisions (FastAPI, Python, PostgreSQL, React + TypeScript, REST/JSON, JWT, pytest, Alembic) without alteration. Made one official, justified selection per open tooling category across frontend, backend, database, development environment, testing, code quality, CI/CD, deployment target class, and security tooling — always exactly one standard per category, with alternatives explicitly named and rejected rather than left as equivalent options. Registered four genuine Open Questions (OQ-5 through OQ-8) rather than inventing answers. Introduced no caching, background-job, or messaging technology, consistent with those capabilities' continued upstream deferral. |
+| 1.1 | 2026-08-07 | Sprint 9.4 (Deployment Readiness & Operational Hardening). Section 20: resolved OQ-8 (GitHub confirmed as code-hosting platform, verified via `git remote -v`). Section 12: recorded implementation status of a documented subset of the CI/CD pipeline (lint/type-check/test/build via three separate GitHub Actions workflows; E2E, staging auto-deploy, and the production approval gate remain future work). Section 14: recorded implementation status of Dependency/Vulnerability Scanning (Dependabot, `pip-audit`, `pnpm audit`, Trivy) — all now wired into that same CI, unblocked by OQ-8's resolution. No technology selection already made in this document was altered by either change. |
 
 **Status:** FROZEN. This is the tenth document of TradeOS. It contains no architectural, domain, or business decision of its own — only the official, justified tooling standard for implementing the nine documents that precede it.

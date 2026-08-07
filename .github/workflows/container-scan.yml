@@ -1,0 +1,75 @@
+# TradeOS — Container Scan (Sprint 9.4, Deployment Readiness &
+# Operational Hardening). Construye la imagen Docker real del backend
+# (backend/Dockerfile, Sprint 9.1) únicamente para que Trivy la escanee
+# — no se publica ni se despliega a ningún registro (fuera de alcance de
+# este sprint; ver CHANGELOG.md, Sprint 9.4).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/container-scan.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/container-scan.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Distinto de backend-ci.yml/frontend-ci.yml: este workflow SÍ necesita
+# más que `contents: read`, porque sube el resultado de Trivy a la
+# pestaña Security de GitHub. `security-events: write` es obligatorio
+# para upload-sarif; `actions: read` se suma porque este repositorio es
+# privado (confirmado: `gh repo view` → "visibility":"PRIVATE") — la
+# documentación oficial de codeql-action distingue explícitamente ese
+# requisito adicional para repos privados (Fase 3.3).
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+
+jobs:
+  container-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build backend image
+        run: docker build -t tradeos-backend:${{ github.sha }} ./backend
+
+      # severity: 'CRITICAL,HIGH' + exit-code: '1' es exactamente el
+      # ejemplo oficial de trivy-action para fallar el build
+      # (github.com/aquasecurity/trivy-action) — sin este exit-code,
+      # el default (0) nunca fallaría el workflow pese a hallazgos reales.
+      - name: Trivy scan (fail on CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: "tradeos-backend:${{ github.sha }}"
+          format: "table"
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"
+
+      # Segunda pasada, en SARIF, siempre ejecutada (incluso si la
+      # anterior ya falló el job) para que el hallazgo quede visible en
+      # la pestaña Security de GitHub, no solo en el log de este job.
+      - name: Trivy scan (SARIF for Security tab)
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: "tradeos-backend:${{ github.sha }}"
+          format: "sarif"
+          output: "trivy-results.sarif"
+          severity: "CRITICAL,HIGH"
+          exit-code: "0"
+
+      - name: Upload SARIF to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          sarif_file: "trivy-results.sarif"

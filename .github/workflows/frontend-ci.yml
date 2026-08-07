@@ -1,0 +1,85 @@
+# TradeOS — Frontend CI (Sprint 9.4, Deployment Readiness & Operational
+# Hardening). Primera ejecución automatizada de eslint/tsc/vitest/build,
+# ya documentados como estándar del proyecto (TRADEOS_TECHNICAL_STACK.md
+# §11-12) pero solo corridos manualmente hasta ahora.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-ci.yml"
+  pull_request:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-ci.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # pnpm/setup es la Action oficialmente recomendada para pnpm v11+
+      # (pnpm.io/continuous-integration; pnpm/action-setup queda
+      # reservada explícitamente a pnpm v10 o anterior) — instala pnpm y
+      # Node en un solo paso, sin necesitar actions/setup-node por
+      # separado. Misma versión de pnpm que ya usa el despliegue real
+      # (render.yaml: `corepack prepare pnpm@11.10.0`). Node 22
+      # (Maintenance LTS): Node 20 alcanzó su EOL el 30 de abril de 2026
+      # (nodejs.org/en/about/eol) — package.json solo exige ">=20", así
+      # que fijar 22 en la CI no requiere ningún cambio ahí.
+      #
+      # install: false — pnpm/setup has no working-directory/cwd input
+      # (verified against its own README), so its own automatic "pnpm
+      # install" would run at the repo root, where no package.json
+      # exists. cache-dependency-path and package-json-file point it at
+      # frontend/ explicitly instead; the actual install is the
+      # `defaults.run.working-directory`-scoped step right below.
+      - name: Install pnpm and Node
+        uses: pnpm/setup@4700d737c3d7a2e7199f3d42a920f0bf7f34e411 # v2.0.1
+        with:
+          runtime: node@22
+          cache: true
+          install: false
+          package-json-file: frontend/package.json
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: ESLint
+        run: pnpm run lint
+
+      - name: TypeScript
+        run: pnpm run typecheck
+
+      - name: Vitest
+        run: pnpm run test
+
+      - name: Build
+        run: pnpm run build
+
+      # Report-only, por la misma razón que pip-audit en backend-ci.yml:
+      # verificado empíricamente en esta Fase 4, `pnpm audit
+      # --audit-level=high` encuentra 5 HIGH + 1 CRITICAL ya existentes
+      # en dependencias transitivas de eslint (brace-expansion, js-yaml)
+      # — nada introducido por este sprint. Bloquear el build por deuda
+      # de terceros preexistente, no relacionada con el propósito de este
+      # sprint, excedería su alcance. Ver CHANGELOG.md, Sprint 9.4.
+      - name: pnpm audit (report-only)
+        run: pnpm audit --audit-level=high
+        continue-on-error: true

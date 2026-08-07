@@ -1,0 +1,44 @@
+# TradeOS — Dependabot configuration (Sprint 9.4, Deployment Readiness &
+# Operational Hardening). Resolves TRADEOS_TECHNICAL_STACK.md OQ-8 in
+# practice: `pip`/`npm`/`docker`/`github-actions` are the ecosystems that
+# document explicitly cover this repository's four dependency surfaces
+# (docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference).
+#
+# `npm` covers pnpm too — Dependabot auto-detects `pnpm-lock.yaml` under
+# that same ecosystem value (no separate "pnpm" ecosystem exists; GitHub
+# Changelog, 2023-06-12, "Dependabot version updates now supports pnpm").
+# `pip` covers Poetry (`pyproject.toml`/`poetry.lock`) — confirmed
+# official support for Poetry v2 in the same reference above.
+#
+# `github-actions` keeps the SHA-pinned third-party Actions in the three
+# workflows below (backend-ci.yml, frontend-ci.yml, container-scan.yml)
+# updated via a reviewed PR, rather than left pinned forever — the
+# intended complement to pinning by commit SHA (GitHub's own Security
+# Hardening Guide: "Pinning an action to a full-length commit SHA is
+# currently the only way to use an action as an immutable release").
+#
+# Weekly, not daily: a single-maintainer project (TRADEOS_PRODUCT_BIBLE.md
+# Section 4.2) reviewing PRs "at least monthly" per
+# TRADEOS_TECHNICAL_STACK.md Section 17 — daily would only create PR
+# backlog noise disproportionate to that review cadence.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "docker"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

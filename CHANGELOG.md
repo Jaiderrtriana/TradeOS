@@ -5060,3 +5060,280 @@ not re-audit the full, current state of Master Plan §16 itself — that
 was outside this sprint's scope). Secrets management has no remaining
 gap this project's current single-user scale requires closing. No
 `git push` was run at any point.
+
+## Sprint 9.4 — Deployment Readiness & Operational Hardening
+
+Scope, narrowed by explicit user decision after an initial broader
+analysis (Fase 1/2): build the project's DevOps/automation foundation —
+a minimal CI + security-scanning pipeline — without touching deployment
+automation itself. Explicitly out of scope: Render deployment, Auto
+Deploy, Staging, Production deployment, Monitoring, Alerting, Error
+Tracking, Rate Limiting, Disaster Recovery, Backup verification,
+Rollback strategy, Production Checklist — all deferred to a future
+sprint, none silently absorbed into this one.
+
+Every workflow-architecture and tooling decision below went through a
+dedicated documentary-research pass (Fase 3.1–3.3) before implementation,
+each backed by an official source, not assumed from prior experience —
+the same standard applied to HSTS/CSP in Sprint 9.3.
+
+### Decision: OQ-8 resolved — GitHub is the confirmed code-hosting platform
+`TRADEOS_TECHNICAL_STACK.md` §20 registered this as genuinely open since
+the document's initial version: §12's GitHub Actions selection and §14's
+Dependabot choice both assumed it "as the most likely default," never
+confirmed. Resolved with direct evidence from this repository itself —
+`git remote -v` returns `origin git@github.com:Jaiderrtriana/TradeOS.git`
+for both fetch and push — not inferred, not assumed. `TRADEOS_TECHNICAL_STACK.md`
+bumped 1.0 → 1.1 (its first amendment since being frozen), following the
+same pattern already established for `SYSTEM_ARCHITECTURE.md`/`DATABASE_DESIGN.md`
+in Sprint 9.3: a status note appended to §12/§14, the Open Question
+removed from §20 with its resolution recorded, and both of this
+document's own history tables (§1 Document Control, §21 Change Log —
+a structural quirk unique to this document, flagged during Fase 1)
+updated in lockstep.
+
+### Decision: three separate workflow files, not one `ci.yml` with multiple jobs
+Investigated against official GitHub Actions documentation specifically
+before designing anything (user-mandated re-verification, turn 3 of
+Fase 3): GitHub does not explicitly prescribe either structure. Two
+concrete, documented mechanisms decided it instead:
+- **Job parallelization and PR check visibility are identical either
+  way** — jobs run in parallel by default regardless of file structure
+  (`docs.github.com`/articles/getting-started-with-github-actions), and
+  GitHub creates one status check per job, not per workflow file,
+  confirmed via GitHub's own "Status checks" reference.
+- **Only separate workflow files get native `paths` filtering** — a
+  change touching only `frontend/` never triggers `backend-ci.yml` or
+  `container-scan.yml`, with zero third-party tooling
+  (`docs.github.com/actions/using-workflows/triggering-a-workflow`).
+  Replicating this inside one multi-job workflow would require a
+  third-party action (e.g. `dorny/paths-filter`) GitHub does not ship.
+
+This is the only point where official documentation actually
+distinguished the two options — it favored separate files, so that is
+what was built.
+
+### Decision: `concurrency` on all three workflows
+Official pattern, applied verbatim
+(`docs.github.com/en/actions/using-jobs/using-concurrency`):
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+```
+A repeated push to the same PR/branch cancels the previous, now-obsolete
+run instead of letting it finish and consume runner minutes for nothing
+— most relevant for `container-scan.yml`, the slowest of the three
+(Docker build + Trivy scan).
+
+### Decision: Poetry via `pipx install poetry==2.4.1`, not `snok/install-poetry`
+The Plan Técnico's first draft proposed the third-party
+`snok/install-poetry` action. A dedicated re-verification (user-mandated,
+Fase 3.2) against Poetry's own official documentation
+(`python-poetry.org/docs/#installation`) found it explicitly recommends
+`pipx` as "one of your top choices for use of Poetry in CI" — and never
+mentions any third-party GitHub Action. Corrected before implementation:
+`pipx install poetry==2.4.1`, with `pipx` already preinstalled on
+`ubuntu-24.04` runners (`actions/runner-images`, confirmed version
+1.16.0) — no extra dependency, no extra action to SHA-pin and keep
+updated, identical functionality for this project's exact need (a
+version-pinned Poetry compatible with `actions/setup-python`'s
+`cache: 'poetry'`). Version `2.4.1` specifically matches
+`backend/poetry.lock`'s own generator header ("automatically @generated
+by Poetry 2.4.1") — a different Poetry version risked a different
+lockfile format than what's committed.
+
+### Decision: Node 22 in CI, not Node 20
+`frontend/package.json` only requires `"node": ">=20"`. Verified against
+Node.js's own official EOL page (`nodejs.org/en/about/eol`): **Node 20
+reached end-of-life on April 30, 2026** — already unsupported upstream
+as of this sprint. Building a brand-new CI pipeline today deliberately
+targeting an EOL runtime, only because `>=20` technically allows it,
+would be building on a known-unsupported foundation from day one. Node
+22 (Maintenance LTS, supported until April 2027) satisfies the existing
+constraint without any change to `package.json`.
+
+### Decision: `pnpm/setup`, not `pnpm/action-setup` + `actions/setup-node`
+Verified against pnpm's own official CI documentation
+(`pnpm.io/continuous-integration`) and the `pnpm/setup` README directly:
+`pnpm/action-setup` is explicitly reserved for pnpm v10 and older;
+`pnpm/setup` is the current recommendation for v11+, which is what this
+project already uses (`render.yaml`: `corepack prepare pnpm@11.10.0`).
+`pnpm/setup` also has its own native caching (`cache: true`) and installs
+Node in the same step, removing the need for a separate
+`actions/setup-node`. Neither action has a working-directory input
+(verified against the README), so `install: false` plus explicit
+`package-json-file`/`cache-dependency-path` inputs point it at
+`frontend/` — the actual `pnpm install --frozen-lockfile` runs as its
+own step, scoped by the job's `defaults.run.working-directory`.
+
+### Decision: severity policy for Trivy / `pip-audit` / `pnpm audit`
+Investigated per the user's explicit instruction: official documentation
+of each tool plus GitHub Security/Actions guidance, before proposing
+anything — no threshold invented.
+- **Trivy:** `severity: 'CRITICAL,HIGH'` + `exit-code: '1'` is the exact
+  example `aquasecurity/trivy-action`'s own README documents for failing
+  a build (default `exit-code` is `0` — a no-op unless overridden).
+- **`pnpm audit`:** `--audit-level=high` — an officially documented
+  option (`pnpm.io/cli/audit`) accepting `low|moderate|high|critical`;
+  `high` matches Trivy's threshold for consistency between the two
+  configurable scanners.
+- **`pip-audit`:** **no severity filter exists.** Confirmed directly
+  against its own documentation and repository: a `--min-severity` flag
+  was requested upstream and never implemented. It is binary — fail on
+  any known vulnerability, or don't fail at all. This is a genuine,
+  tool-level asymmetry, not a decision made here to weaken it.
+
+### Decision: `pip-audit` and `pnpm audit` run report-only this sprint
+Discovered during implementation, not anticipated in the Plan Técnico:
+running `poetry run pip-audit` against the real project found **12
+known vulnerabilities in 4 already-existing dependencies**
+(`cryptography`, `ecdsa`, `pytest`, `starlette`) — none introduced by
+this sprint. Running `pnpm audit --audit-level=high` against the real
+frontend found the same pattern: **5 HIGH + 1 CRITICAL** in transitive
+`eslint` dependencies (`brace-expansion`, `js-yaml`) — again, pre-existing,
+not introduced here. Blocking either build on day one, for CVEs
+this sprint's scope (CI infrastructure, not dependency upgrades)
+never intended to fix, would misrepresent a scanning-infrastructure
+sprint as a broken one. Presented to the user as a genuine implementation
+blocker (not improvised): **decision — both run with `continue-on-error: true`
+(report-only) for now**, recorded here as known, pre-existing technical
+debt for a future dependency-upgrade sprint, not silently ignored. Trivy
+was not affected by this — attempted to verify empirically against the
+real backend image (`docker build` succeeded; Trivy itself could not run
+locally due to a Docker-socket/SELinux permission constraint specific to
+this local sandbox, unrelated to the workflow's own logic) — its
+CRITICAL/HIGH-blocking configuration was kept as designed, to be
+confirmed on the first real CI run.
+
+### Decision: `GITHUB_TOKEN` least privilege
+Verified against GitHub's own Security Hardening Guide for GitHub
+Actions before assigning any permission. `backend-ci.yml` and
+`frontend-ci.yml` declare only `contents: read` — confirmed sufficient,
+since checkout, Poetry/pipx, `pnpm/setup`, and every lint/test/build/audit
+step in both never call the GitHub API. `container-scan.yml` additionally
+needs `security-events: write` for `upload-sarif`, plus `actions: read`
+specifically because this repository is private (`gh repo view` confirms
+`"visibility":"PRIVATE"`) — the codeql-action documentation names that
+extra requirement explicitly for private repositories. No workflow is
+granted write access to repository contents.
+
+### Decision: `actions/checkout` hardening
+`persist-credentials: false` in all three workflows — GitHub's own
+hardening guidance: the default (`true`) leaves a credential in
+`.git/config` that a later step could accidentally leak into an
+artifact or log, and none of these workflows ever need to push back to
+the repository. `fetch-depth` left undeclared: verified directly against
+`actions/checkout`'s own README that `1` (a single commit) is already
+its default — writing it explicitly would only restate, not change,
+existing behavior.
+
+### Decision: all third-party Actions pinned by commit SHA
+Per GitHub's own Security Hardening Guide ("Pinning an action to a
+full-length commit SHA is currently the only way to use an action as an
+immutable release"). Every SHA used
+(`actions/checkout@3d3c42e...` v7.0.1, `actions/setup-python@5fda3b9...`
+v7.0.0, `pnpm/setup@4700d73...` v2.0.1, `aquasecurity/trivy-action@ed142fd...`
+v0.36.0, `github/codeql-action/upload-sarif@5595cca...` v4.37.6) was
+fetched directly from each repository's real tag list via the GitHub
+API (`gh api repos/<owner>/<repo>/tags`), not typed from memory or
+invented. `.github/dependabot.yml`'s `github-actions` ecosystem entry
+keeps these updated via reviewed PRs going forward, rather than pinned
+forever.
+
+### Decision: `pypa/gh-action-pip-audit` not used; `poetry run pip-audit` instead
+The official `pip-audit` GitHub Action expects a `requirements.txt`-style
+input; this is a pure-Poetry project with no such file, and Poetry 2.x
+moved `poetry export` into a separate plugin not otherwise needed here.
+`pip-audit`'s own documented default mode audits "the local environment"
+directly — so it was added as a `backend/pyproject.toml` dev dependency
+(`pip-audit ^2.10.1`, resolved and locked using Poetry 2.4.1 specifically,
+matching the exact version the CI installs, so the regenerated
+`poetry.lock` is reproducible between local and CI) and run via
+`poetry run pip-audit` against the already-installed environment — no
+extra export step, no extra plugin dependency.
+
+### Decision: Trivy scans only the backend image; the frontend has none to scan
+`TRADEOS_SYSTEM_ARCHITECTURE.md` §12.1 confirms the frontend ships as a
+static build (`runtime: static` in `render.yaml`), never a container —
+there is no frontend Docker image for Trivy to scan. `container-scan.yml`
+builds `backend/Dockerfile` locally (tagged by commit SHA, never pushed
+to any registry — out of this sprint's explicit scope) purely so Trivy
+has something to scan, then discards it.
+
+### Files added
+- `.github/dependabot.yml`
+- `.github/workflows/backend-ci.yml`
+- `.github/workflows/frontend-ci.yml`
+- `.github/workflows/container-scan.yml`
+
+### Files modified
+- `backend/pyproject.toml` — added `pip-audit` to `[tool.poetry.group.dev.dependencies]`.
+- `backend/poetry.lock` — regenerated with Poetry 2.4.1 (matching both
+  the file's own existing generator version and the CI's pinned
+  version) to include `pip-audit` and its transitive dependencies.
+- `docs/10_TRADEOS_TECHNICAL_STACK.md` — v1.0 → v1.1 (its first
+  amendment): OQ-8 resolved (§20); implementation-status notes added to
+  §12 (CI/CD) and §14 (Security Tooling) without altering either
+  section's original tool selections; both history tables (§1, §21)
+  updated.
+- `CHANGELOG.md` — this entry.
+
+### Explicitly not changed
+`render.yaml`, `backend/Dockerfile`, `backend/app/**`, `frontend/src/**`,
+`docs/04__TRADEOS_SYSTEM_ARCHITECTURE.md`, `docs/05_TRADEOS_DATABASE_DESIGN.md`,
+`docs/09_TRADEOS_IMPLEMENTATION_MASTER_PLAN.md` — nothing in this
+sprint's scope touches deployment configuration, application code, or
+any document besides the Technical Stack (the only one naming the CI/CD
+and security-tooling decisions this sprint implements).
+
+### Validations performed and results
+- `python3 -c "import yaml; yaml.safe_load(...)"` against all four new
+  YAML files — syntactically valid.
+- Backend, re-run locally against the regenerated `poetry.lock` ahead of
+  committing, to confirm adding `pip-audit` as a dev dependency
+  introduced no regression to the existing toolchain or test suite:
+  `poetry run ruff format --check .` (1 pre-existing file needing
+  reformatting, unchanged since Sprint 8.1, not touched by this sprint),
+  `poetry run ruff check .` (clean), `poetry run mypy .` (9 pre-existing
+  errors in the same 4 files as every prior sprint, none new),
+  `poetry run pytest` (357 passed, same count as every prior sprint).
+- Frontend: `pnpm run lint` (clean), `pnpm run typecheck` (clean),
+  `pnpm run test` (93 passed, same count as every prior sprint),
+  `pnpm run build` (succeeds; same pre-existing >500kB chunk-size
+  warning as before, unrelated to this sprint).
+- `poetry run pip-audit` and `pnpm audit --audit-level=high` both
+  executed for real against this project (not simulated) — results
+  quoted in the Decision above, driving the report-only choice.
+- `docker build` of `backend/Dockerfile` executed for real, confirming
+  the image `container-scan.yml` will build still succeeds unmodified.
+- Every action SHA was resolved against the real, current GitHub API
+  response for that repository's tags, not memorized or assumed.
+
+### Future observations (explicitly not implemented this sprint)
+- `pip-audit` and `pnpm audit` are report-only, tracking 12 and 6
+  pre-existing vulnerabilities respectively — a dependency-upgrade
+  sprint (`cryptography`, `ecdsa`, `pytest`, `starlette`, and the
+  transitive `eslint` chain) should revisit both and switch them back
+  to blocking once resolved.
+- Trivy's real behavior against the built backend image was designed
+  and documented but not empirically confirmed in this local
+  environment (Docker-socket/SELinux constraint, not a workflow defect)
+  — the first real CI run is this design's actual first test.
+- Playwright E2E, staging auto-deploy, and the production manual-approval
+  gate remain exactly as `TRADEOS_TECHNICAL_STACK.md` §12 originally
+  described them: decided, not yet built.
+- Monitoring, Alerting, Error Tracking, Rate Limiting, Disaster Recovery,
+  Backup verification, Rollback strategy, and a consolidated Production
+  Checklist were all explicitly scoped out of Sprint 9.4 during Fase 1/2
+  and remain open for a future sprint.
+
+### Confirmation
+This sprint builds CI and security-scanning infrastructure only — it
+does not deploy TradeOS anywhere, automate any deployment step, or
+change any business logic, Domain Model, API contract, or database
+schema. OQ-8 is resolved with direct evidence from this repository; the
+severity-policy asymmetry between Trivy/`pnpm audit` (blocking) and
+`pip-audit` (report-only) is a genuine, documented tool limitation, not
+an inconsistency introduced by this sprint. No `git push` was run at any
+point.
