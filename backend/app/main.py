@@ -33,6 +33,7 @@ from app.platform.events.dispatcher import dispatcher
 from app.platform.logging import configure_logging
 from app.platform.middleware.authentication import AuthenticationMiddleware
 from app.platform.middleware.correlation_id import CorrelationIdMiddleware
+from app.platform.middleware.security_headers import SecurityHeadersMiddleware
 
 configure_logging()
 
@@ -95,18 +96,23 @@ app.include_router(dashboard_router, prefix="/api/v1")
 
 # Middleware order matters: Starlette runs the LAST-added middleware
 # OUTERMOST (first on the way in). Order, outermost to innermost:
-# CORS -> Correlation ID -> Authentication -> routing.
+# Security Headers -> CORS -> Correlation ID -> Authentication -> routing.
 #
-# CORS must be outermost of all: a cross-origin preflight (OPTIONS) never
-# carries the Authorization header, so if AuthenticationMiddleware ran
-# first it would reject every preflight with 401 before CORSMiddleware
-# ever got a chance to answer it — no browser-based frontend could reach
-# this API at all. (No frozen document specifies CORS; it is a pure
-# browser cross-origin mechanism, not an architectural decision — see
-# CHANGELOG.md, Sprint 1.2.)
+# CORS must be outermost of the request-handling group: a cross-origin
+# preflight (OPTIONS) never carries the Authorization header, so if
+# AuthenticationMiddleware ran first it would reject every preflight with
+# 401 before CORSMiddleware ever got a chance to answer it — no
+# browser-based frontend could reach this API at all. (No frozen document
+# specifies CORS; it is a pure browser cross-origin mechanism, not an
+# architectural decision — see CHANGELOG.md, Sprint 1.2.)
 #
 # Correlation ID still runs before Authentication so even a 401 rejection
 # is already correlation-ID bound (Sprint 0.2 approved ordering).
+#
+# Security Headers is the true outermost layer (Sprint 9.3): it must
+# apply to every response this process ever sends, including a CORS
+# preflight answer or a 401 from AuthenticationMiddleware — there is no
+# response that should be missing these headers.
 app.add_middleware(AuthenticationMiddleware, public_paths=PUBLIC_PATHS)
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(
@@ -115,3 +121,4 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SecurityHeadersMiddleware)

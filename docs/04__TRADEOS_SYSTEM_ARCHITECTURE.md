@@ -1,8 +1,8 @@
 # TRADEOS_SYSTEM_ARCHITECTURE.md
 
 **Document Status:** CANONICAL AND FROZEN — the permanent system architecture of TradeOS.
-**Version:** 1.2
-**Last Updated:** 2026-07-25
+**Version:** 1.3
+**Last Updated:** 2026-08-07
 **Depends On:** `TRADEOS_PRODUCT_BIBLE.md` v2.1 (frozen) and `TRADEOS_DOMAIN_MODEL.md` v1.1 (frozen). This document does not re-litigate any business or domain decision made in those two — it defines how the domain described in the Domain Model is realized as a running system.
 **Relationship to `TRADEOS_MASTER_ROADMAP.md`:** the Roadmap remains canonical for *sequencing* (versions, milestones, order of work). Where the Roadmap's architecture and technology sections (its Sections 2 and 12) overlap with this document, **this document now wins** — the Roadmap should be treated as historically informative on those points, not authoritative, and revised to reference this document rather than restate it.
 **Does Not Cover:** database schemas, tables, or storage-level design (the next document); API endpoint paths or request/response contracts; UI layout.
@@ -240,12 +240,13 @@ Grounded in Product Bible NFR 10.3, which explicitly leaves the *detailed* secur
 - **Least-privilege data access:** a module's infrastructure layer (its repositories) is the only code path permitted to reach the database tables belonging to its own Bounded Context (Section 3) — this is an application-level enforcement of least privilege, independent of and in addition to whatever database-level permissions the next document defines.
 
 ### 11.2 Explicitly Still Open (Product Bible Open Question 3 — Not Answered Here)
-- Encryption at rest (standard, key management approach).
 - Whether TradeOS staff (if TradeOS ever has staff) can access user data, and under what conditions.
 - Formal breach response process.
 - Any compliance regime (GDPR/CCPA or otherwise) — relevant only if Open Question 2 resolves toward multi-user, per Product Bible Section 10.3.
 
 This document does not invent answers to the above. It confirms that nothing in Section 11.1's baseline is incompatible with any future answer to them.
+
+**Encryption at rest — resolved, Sprint 9.3 (`CHANGELOG.md`):** the managed hosting platform (Render) provides disk-level encryption at rest (AES-256, covering primary, replica, and backup Postgres instances), verified against [render.com/docs/databases](https://render.com/docs/databases). This resolves Master Plan OQ-4 and the encryption-standard component of the Open Question above; the remaining components (staff access, breach response, compliance) stay listed above, unresolved, exactly as before.
 
 ---
 
@@ -346,6 +347,7 @@ Consistent with this project's practice of stating "is" versus "should be" hones
 | 1.0 | 2026-07-24 | Initial System Architecture. Derived from `TRADEOS_PRODUCT_BIBLE.md` v2.1 and `TRADEOS_DOMAIN_MODEL.md` v1.1. Defined architectural style, module boundaries, bounded context interactions, communication patterns, event flow, service responsibilities, technology decisions, scalability strategy, security architecture baseline, deployment architecture, and external integrations. |
 | 1.1 | 2026-07-24 | Approved and frozen as canonical. Added Architectural Principles (Section 1, engineering-level, distinct from the Product Bible's product-level principles), a Quality Attributes Matrix with explicit priority ordering (Section 9), a consolidated Architecture Decision Records registry (Section 14), and an explicit clarification (Section 0, Section 8) that technology/implementation decisions are distinct from business architecture and may evolve independently via the lightweight process in Section 8.4. Renumbered all sections accordingly. |
 | 1.2 | 2026-07-25 | **Documentation correction, not an architectural change.** Section 8's Frontend row and Section 12.1 both incorrectly justified the React + TypeScript decision by claiming it was "already the reference prototype's (`TradeOS_UI_v3`) direction." `PROJECT_AUDIT.md` Section 2 confirms `TradeOS_UI_v3` is plain HTML/CSS/JS with no build step, not React — this justification was factually inaccurate. Added Section 8.5, explicitly distinguishing **prototype implementation technology** (`TradeOS_UI_v3`: HTML/CSS/JS, UX/IA reference only, never an implementation baseline) from **production implementation technology** (React + TypeScript, approved and unchanged). The technology decision itself, and all business architecture in Sections 1–7 and 9–13, are unaffected — only the inaccurate rationale is corrected. |
+| 1.3 | 2026-08-07 | Section 12.1: recorded that Render was operationally selected as the specific vendor within the already-approved hosting-platform class (Sprint 9.2) — this note was first added during that sprint's own self-audit but had not yet received its own Document Control entry; corrected retroactively here rather than left unversioned. Section 11.2: resolved Master Plan OQ-4 — encryption at rest is provided by the managed hosting platform (Render, AES-256, verified against official documentation) (Sprint 9.3). Neither change alters any business or domain architecture in Sections 1–10 or 13. |
 
 **Status:** FROZEN. This is the third permanent foundational document of TradeOS, after `TRADEOS_PRODUCT_BIBLE.md` and `TRADEOS_DOMAIN_MODEL.md`.
 **Next document per the reconstruction plan:** database design (schemas, tables), to be created only now that this System Architecture is approved.

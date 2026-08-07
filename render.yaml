@@ -1,5 +1,9 @@
 # TradeOS — Render Blueprint (Infrastructure as Code)
 # Sprint 9.2 (docs/09_TRADEOS_IMPLEMENTATION_MASTER_PLAN.md §9) — Plan Técnico v4, aprobado.
+# Sprint 9.3 (Hardening & Blocking-Question Resolution) — Plan Técnico v5, aprobado:
+# JWT_SECRET_KEY generado por Render en vez de pegado a mano, y headers de
+# seguridad del frontend. Ver CHANGELOG.md, Sprint 9.3, para la auditoría
+# completa (CSP contra el bundle real, comportamiento de HSTS bajo RFC 6797).
 #
 # No modifica el Dockerfile de Sprint 9.1: `dockerCommand` abajo es la única
 # forma Render-específica de resolver el puerto dinámico ($PORT) sin acoplar
@@ -34,7 +38,11 @@ services:
       - key: DATABASE_SSL_REQUIRED
         value: "true"
       - key: JWT_SECRET_KEY
-        sync: false   # se fija manualmente en el dashboard de Render, nunca en este archivo
+        # Sprint 9.3: generado automáticamente por Render (aleatorio,
+        # base64, 256 bits) una sola vez, en vez de requerir que alguien
+        # lo pegue a mano en el dashboard (Blueprint YAML Reference de
+        # Render, campo `generateValue`) — nunca queda en este archivo.
+        generateValue: true
       - key: CORS_ALLOWED_ORIGINS
         # Formato obligatorio: array JSON en texto. Render solo entrega
         # strings (render.com/docs/configure-environment-variables); un
@@ -67,3 +75,27 @@ services:
       - source: /*
         destination: /index.html
         type: rewrite
+    # Sprint 9.3: headers de seguridad, auditados contra el bundle real
+    # generado por `pnpm run build` (sin script-src/worker-src/font-src/
+    # media-src adicionales: el bundle no usa Workers, fuentes externas
+    # ni audio/video) y contra las dependencias reales del proyecto
+    # (style-src 'unsafe-inline' es necesario por el posicionamiento
+    # inline de Radix UI/Floating UI y de recharts, no genérico).
+    # Strict-Transport-Security usa max-age=31536000 sin includeSubDomains
+    # ni preload — MDN describe ese valor sin includeSubDomains como el
+    # ejemplo de referencia para un primer despliegue sin registro en la
+    # lista de precarga; includeSubDomains queda diferido hasta contar
+    # con un dominio propio y subdominios verificados.
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; connect-src 'self' https://tradeos-backend.onrender.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
