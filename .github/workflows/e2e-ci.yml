@@ -159,14 +159,21 @@ jobs:
       # `pnpm run test:e2e` — that script is literally "playwright test")
       # so extra diagnostic CLI flags can be appended without touching
       # playwright.config.ts: an HTML report (list stays as the primary,
-      # human-readable console output) and traces/screenshots retained
-      # only on failure. `workers: 1` and every other setting in
+      # human-readable console output) and traces retained only on
+      # failure. `workers: 1` and every other setting in
       # playwright.config.ts are unchanged.
+      #
+      # No `--screenshot` flag: verified against this exact installed
+      # version's own `playwright test --help` (first real CI run failed
+      # with "error: unknown option '--screenshot=only-on-failure'") —
+      # screenshot capture is a `use:` config property, not exposed as a
+      # top-level CLI flag on `playwright test` at all. Not re-added via
+      # playwright.config.ts, which this sprint does not touch.
       - name: Run Playwright E2E suite
         working-directory: frontend
         env:
           VITE_API_BASE_URL: http://localhost:8000/api/v1
-        run: pnpm exec playwright test --reporter=list,html --trace=retain-on-failure --screenshot=only-on-failure
+        run: pnpm exec playwright test --reporter=list,html --trace=retain-on-failure
 
       - name: Upload Playwright report
         if: failure()
