@@ -1,0 +1,53 @@
+# TradeOS — E2E CI stack (E2E CI Integration sprint). Used exclusively by
+# .github/workflows/e2e-ci.yml to run the existing Playwright suite
+# (frontend/e2e/*.spec.ts) against a real, ephemeral backend + PostgreSQL.
+#
+# Deliberately a SEPARATE file from docker-compose.container.yml, not a
+# reuse of it: that file publishes the backend on host port 8080
+# specifically so it can run "side by side with a local `pnpm dev`/
+# `uvicorn --reload` session without any port collision" (its own header
+# comment) — every E2E spec and `VITE_API_BASE_URL` hardcode
+# `localhost:8000`, so this stack must publish 8000, which would defeat
+# that file's own documented purpose if done there instead. Same
+# two-service shape (Postgres with `pg_isready` healthcheck + backend
+# built from the real Dockerfile, gated by `depends_on: condition:
+# service_healthy`) already validated in Sprint 9.1 — only the port and
+# an explicit `name:` differ, for the same "make the bad state
+# unrepresentable" reason that file's own `name:` exists (a distinct
+# Compose project name makes the class of container/volume collision
+# that file's comment describes structurally impossible here too).
+#
+# No named volume for Postgres: this stack is fully ephemeral, torn down
+# with `docker compose down -v` at the end of every CI job — nothing here
+# is meant to persist between runs.
+name: tradeos-e2e
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tradeos
+      POSTGRES_PASSWORD: tradeos
+      POSTGRES_DB: tradeos
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tradeos"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    # No `ports:` — only the `backend` service (inside this same Compose
+    # network, reaching it as `postgres:5432`) needs to talk to it. The
+    # GitHub Actions runner itself never connects to Postgres directly.
+
+  backend:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://tradeos:tradeos@postgres:5432/tradeos
+      JWT_SECRET_KEY: e2e-ci-only-not-for-production
+      JWT_ALGORITHM: HS256
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "30"
+      REFRESH_TOKEN_EXPIRE_DAYS: "30"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
