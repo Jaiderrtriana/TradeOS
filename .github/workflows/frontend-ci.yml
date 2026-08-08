@@ -49,9 +49,21 @@ jobs:
       # exists. cache-dependency-path and package-json-file point it at
       # frontend/ explicitly instead; the actual install is the
       # `defaults.run.working-directory`-scoped step right below.
+      #
+      # Sprint 9.4.1 hotfix: version: "11.10.0" is mandatory — without
+      # it, pnpm/setup does not fall back to any default; it errors with
+      # "No pnpm version is specified" (confirmed on the real first CI
+      # run, GitHub Actions run 31233567395). It only reads a version
+      # from `packageManager`/`devEngines.packageManager` in
+      # package.json, and frontend/package.json declares neither.
+      # 11.10.0 matches render.yaml's own `corepack prepare
+      # pnpm@11.10.0` exactly (verified directly against render.yaml
+      # before making this change) — render.yaml remains the single
+      # source of truth for this version, unchanged by this hotfix.
       - name: Install pnpm and Node
         uses: pnpm/setup@4700d737c3d7a2e7199f3d42a920f0bf7f34e411 # v2.0.1
         with:
+          version: "11.10.0"
           runtime: node@22
           cache: true
           install: false

@@ -5395,3 +5395,36 @@ severity-policy asymmetry between Trivy/`pnpm audit` (blocking) and
 `pip-audit` (report-only) is a genuine, documented tool limitation, not
 an inconsistency introduced by this sprint. No `git push` was run at any
 point.
+
+## Sprint 9.4.1 — CI Hotfix: `pnpm/setup` missing version
+
+Scope, strictly limited to Finding #1 of Sprint 9.4's real post-deployment
+validation (the first actual GitHub Actions run, after `git push`):
+`frontend-ci.yml` failed immediately with `Error: No pnpm version is
+specified` — `pnpm/setup` has no default and only reads a version from
+`packageManager`/`devEngines.packageManager` in `package.json`, neither
+of which `frontend/package.json` declares. A genuine regression
+introduced by Sprint 9.4 itself (an untested assumption that the Action
+would resolve a version on its own), not pre-existing debt.
+
+### Fix
+Added `version: "11.10.0"` to the `pnpm/setup` step in
+`.github/workflows/frontend-ci.yml` — verified directly against
+`render.yaml` first (`corepack prepare pnpm@11.10.0`) to confirm the
+exact value before using it. `render.yaml` itself was not touched; it
+remains the single source of truth for this version.
+
+### Explicitly out of scope, per instruction
+No dependency upgrades, no fix to the `ruff format` finding in
+`tests/dashboard/test_dashboard_flow.py`, no change to `pip-audit`'s or
+`pnpm audit`'s report-only policy, no change to Trivy's severity
+threshold, no security gate removed or weakened, no workflow
+architecture change, no new Action added. Both the Ruff and Trivy
+findings from Sprint 9.4's validation remain classified as pre-existing
+technical debt, deliberately left for a future dependency-upgrade
+sprint.
+
+### Confirmation
+Only `.github/workflows/frontend-ci.yml` and this entry were changed.
+No `git push` was run — awaiting explicit approval, per Sprint 9.4.1's
+own instructions.
