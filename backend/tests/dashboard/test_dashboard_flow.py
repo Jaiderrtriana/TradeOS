@@ -56,9 +56,7 @@ async def _publish_empty_configuration_version(client, headers) -> None:
     assert publish_response.status_code == 200, publish_response.text
 
 
-async def _register_trade(
-    client, headers, *, entered_at: str = "2026-01-01T00:00:00Z"
-) -> str:
+async def _register_trade(client, headers, *, entered_at: str = "2026-01-01T00:00:00Z") -> str:
     payload = {
         "market": "EURUSD",
         "direction": "long",

@@ -5428,3 +5428,194 @@ sprint.
 Only `.github/workflows/frontend-ci.yml` and this entry were changed.
 No `git push` was run — awaiting explicit approval, per Sprint 9.4.1's
 own instructions.
+
+## Sprint de Remediación — Dependency & Security Hardening
+
+Scope: remediate the technical debt Sprint 9.4's CI infrastructure was
+explicitly designed to surface (`ruff format`, real `pip-audit`/`pnpm
+audit` findings), following a full 6-phase cycle (Análisis → Riesgos →
+Plan Técnico → Implementación → Validación → Informe). Explicit
+methodology for this sprint: separate low-risk, mechanical changes from
+root-dependency upgrades; do not chase `pip-audit`/`pnpm audit` = 0 at
+the cost of introducing risk where none exists today; treat every major
+version jump as its own decision with its own blast radius, not as part
+of a single "dependency update."
+
+### Decision: `ruff format` — cosmetic fix, applied
+`tests/dashboard/test_dashboard_flow.py` had one pre-existing
+(Sprint 8.1) formatting violation: a function signature `ruff` now
+wraps differently. Applied via `ruff format .`; the resulting diff is a
+single line re-wrap with zero semantic change, verified via `ruff
+format --check .` (clean) and the full `pytest` suite (357/357 passed).
+This was the gate sitting upstream of `mypy`/`pytest`/`pip-audit`/
+Testcontainers in `backend-ci.yml` — its removal is what makes every
+other empirical result in this entry possible.
+
+### Decision: frontend lockfile refresh — `pnpm update --no-save`
+Fase 3 initially validated a plain `pnpm update` on an isolated,
+never-pushed branch and observed it resolved the three targeted
+advisories (`brace-expansion`, `js-yaml`, `nanoid`) without touching
+`package.json`. **That observation was incomplete** — Fase 4 discovered
+that `pnpm update` without a flag also rewrites the `^`-range floors in
+`package.json` itself (25 lines changed), which the approved plan
+explicitly excluded. Corrected by re-running with `pnpm update
+--no-save`, which updates `pnpm-lock.yaml` only; `git diff --stat
+package.json` confirmed zero changes after the correction. Resulting
+lockfile pins `brace-expansion@1.1.18`, `js-yaml@4.3.1`, and
+`nanoid@3.3.17` — all three advisories now resolved. Full validation
+re-run against the corrected lockfile: `eslint .` (clean), `tsc -b
+--noEmit` (clean), `vitest` (93/93 passed, 16/16 files), `pnpm run
+build` (succeeds, same pre-existing chunk-size warning as before).
+`pnpm audit --audit-level=high` drops from 13 findings (6 high, 1
+critical) to 8 (6 moderate, 1 high, 1 critical) — the two remaining
+real findings (`vitest` CRITICAL requiring `>=3.2.6`, `vite` HIGH
+requiring `>=6.4.3`) both require a major-version jump outside the
+current `package.json` ranges and are deliberately deferred (see
+"Explicitly deferred" below).
+
+### Decision: FastAPI `^0.134.0` + Starlette `1.3.1`, pinned explicitly
+Root cause: `fastapi = "^0.115.0"` capped Starlette at `<0.47.0`, and
+every current Starlette CVE fix (`PYSEC-2026-161/248/249/1941/1942/
+2280/2281`) requires versions ranging up to `1.3.1` — meaning no
+version choice could resolve all of them while staying below Starlette
+1.0. Verified live against PyPI's own version history that FastAPI
+`0.134.0` is the first release re-certified against `starlette>=0.46.0`
+without an upper bound (`0.133.0` merely dropped the cap; `0.134.0`
+explicitly added support for JSON Lines and binary streaming against
+the newer Starlette), and deliberately did **not** pursue the latest
+FastAPI (`0.141.1`) because it would additionally absorb two unrelated
+behavior changes (strict `Content-Type` validation added in `0.132.0`,
+an internal `APIRouter`/`router.routes` refactor in `0.137.0`) that
+contribute nothing to closing these CVEs.
+
+Pre-implementation risk analysis (all confirmed by reading source, not
+assumed) found zero blast radius from Starlette's own breaking changes
+between `0.46.2` and `1.3.1`: `app/main.py` already uses the `lifespan`
+context-manager style (unaffected by `on_startup`/`on_shutdown`'s
+removal in `1.0.0rc1`); `app/platform/errors.py`'s
+`@app.exception_handler(...)` calls FastAPI's own independently
+re-implemented method (confirmed identical in `fastapi/applications.py`
+across both 0.115.14 and 0.141.1 — it does not depend on Starlette's
+own, now-removed, decorator); the `status.HTTP_201_CREATED` /
+`HTTP_204_NO_CONTENT` constants used throughout the routers are
+untouched by Starlette 0.48.0's RFC9110 renaming; the app has no
+`Jinja2Templates`/`TemplateResponse`/`FileResponse` usage at all; the
+project's custom ASGI middleware (`authentication.py`,
+`security_headers.py`, `correlation_id.py`) is built on raw
+`Scope`/`Receive`/`Send`/`ASGIApp` primitives, not the more
+version-sensitive `BaseHTTPMiddleware`; and `httpx 0.27.2` (the
+project's pin) satisfies Starlette's own floor (`>=0.27.0`).
+
+**Empirical validation, post-implementation (`poetry install` resolved
+exactly `fastapi 0.134.0` + `starlette 1.3.1`):**
+- `ruff format --check .` — clean (273 files).
+- `ruff check .` — all checks passed.
+- `mypy .` — 9 pre-existing errors, in the same 4 files and the same
+  line numbers as a baseline run against the original `fastapi
+  0.115.14`/`starlette 0.46.2` (confirmed via a temporary `git stash` of
+  only `pyproject.toml`/`poetry.lock`, followed by `poetry install` and
+  a second `mypy` run) — **zero errors introduced by this upgrade.**
+- `pytest` — full suite, 357 passed, 0 failed (previously an unverified
+  number in Sprint 9.4's own report; now empirically confirmed,
+  including the Testcontainers-backed Postgres concurrency tests, which
+  do exercise a real, ephemeral `postgres:16` container via `asyncpg`).
+- `tests/platform/test_authentication_middleware.py`,
+  `test_correlation_id_middleware.py`, and `test_jwt.py` specifically:
+  13/13 passed.
+- `app.openapi()` generates a valid `openapi: "3.1.0"` schema (38
+  paths) and serializes to JSON cleanly; a live `TestClient` request to
+  `/docs` and `/openapi.json` returns the expected `401` (the
+  authentication middleware correctly gates every route, including
+  these — this is existing, intentional application behavior, not a
+  regression) with correlation IDs threaded through structured logs
+  exactly as designed.
+- `pip-audit` — drops from 12 findings in 4 packages to **3 findings in
+  3 packages**: every Starlette-related finding is now gone.
+- One new, non-blocking observation: pytest now emits
+  `StarletteDeprecationWarning: Using httpx with starlette.testclient
+  is deprecated; install httpx2 instead.` — `TestClient` still works
+  correctly (proven by the passing suite above); tracked as a future
+  observation, not addressed this sprint.
+
+### Decision: `ecdsa` / `python-jose` — risk accepted and documented, not migrated
+`pip-audit`'s remaining `ecdsa 0.19.2` finding (`PYSEC-2026-1325`, a
+Minerva timing attack on P-256 signing/keygen/ECDH, per OSV.dev) has no
+upstream fix — the `python-ecdsa` maintainers consider side-channel
+attacks out of scope for the project. Verified directly in this
+codebase that the finding is not reachable: `jwt_algorithm` is `HS256`
+everywhere it is configured (`config.py`'s default, `.env.example`,
+`docker-compose.container.yml`), and a full grep of `backend/` found no
+`ES256`/`ES384`/`ES512`/`ECDSA` reference anywhere. `ecdsa` is pulled in
+purely as an **unconditional** (non-marker-gated) dependency of
+`python-jose` itself — it installs regardless of which algorithm is
+actually used. Confirmed via PyPI that `PyJWT` has no such
+dependency (only `cryptography` as an optional extra), so migrating
+would eliminate the finding entirely — but the migration would touch
+`app/platform/security/jwt.py` and its exception-handling contract
+(`JWTError` → `PyJWTError`/subclasses), i.e. the authentication layer,
+to close a vulnerability class this code cannot reach today.
+**Decision: keep `python-jose`, accept and document this finding.**
+Chasing a `pip-audit`-clean report by touching authentication where no
+real exposure exists is a worse trade than carrying a
+non-exploitable finding. Revisit only if TradeOS ever needs to verify
+or issue EC-signed tokens (e.g. accepting JWTs from an external IdP).
+
+### Explicitly deferred (identified, deliberately not pursued this sprint)
+- `cryptography 49.0.0` → `50.0.0`: Fase 2 flagged this as
+  "investigate, probably upgrade" but it was never carried into the
+  approved Fase 3 Plan Técnico as a discrete item — an omission on this
+  sprint's part, not a decision. Left for the next remediation sprint,
+  where it should get its own blast-radius analysis (it is a
+  `python-jose[cryptography]` transitive dependency).
+- `pytest 8.4.2` → `9.0.3`: dev-only, does not ship to production;
+  deferred alongside `cryptography`.
+- `vite` (`^5.4.8` → needs `>=6.4.3`) and `vitest` (`^2.1.1` → needs
+  `>=3.2.6`): both close real advisories (a Windows-specific
+  `server.fs.deny` bypass in Vite; arbitrary file read/execution in
+  Vitest's UI server, which this project never enables), but both
+  require a major-version jump with its own breaking-change surface.
+  Deferred as dev/build-tooling-only risk with no path to the shipped
+  production bundle.
+- 11 Dependabot PRs (opened automatically since Sprint 9.4's
+  `dependabot.yml` went live), reviewed and dispositioned as insumo for
+  this sprint's planning rather than merged as-is:
+  - **#1** (`python:3.12-slim` → `python:3.13-slim`): closed. Its own
+    `container-scan` run (real evidence, not assumed) shows Debian 13
+    still carries 23 OS-level CVEs (19 HIGH + 4 CRITICAL, the same
+    `perl`/`util-linux` family, several marked `fix_deferred` by Debian
+    itself) — the base-image bump does not resolve what it claims to,
+    and it silently bundles a Python 3.12→3.13 interpreter change with
+    the OS patch level.
+  - **#8** (`fastapi` → `0.141.1`): closed, superseded by the manual
+    `^0.134.0` change above — `0.141.1` is exactly the "latest wins by
+    default" alternative this sprint deliberately avoided.
+  - **#3** (`httpx` dev-only), **#4** (`pytest-asyncio`), **#6**
+    (`mypy`, major jump), **#2** (`eslint-config-prettier`, major
+    jump), **#5** (`@tanstack/react-virtual`), **#7**
+    (`eslint-plugin-react-hooks`, major jump), **#9**
+    (`@testing-library/user-event`), **#11** (`react-router-dom`, major
+    jump): postponed — none relate to the vulnerabilities scoped into
+    this sprint. The five frontend PRs (#2, #5, #7, #9, #11) were also
+    found to be branched from before Sprint 9.4.1's hotfix landed on
+    `main`, so their own CI currently fails on the same
+    already-fixed `pnpm/setup` regression; a Dependabot rebase resolves
+    that independently of whatever is decided about their content.
+  - Closing #1 and #8 on GitHub, and any other PR disposition, is
+    pending the same explicit go-ahead as this sprint's `git push` —
+    not executed as part of local implementation.
+
+### Files changed
+- `backend/tests/dashboard/test_dashboard_flow.py` — formatting only.
+- `backend/pyproject.toml` — `fastapi = "^0.134.0"`, added
+  `starlette = "1.3.1"`.
+- `backend/poetry.lock` — regenerated.
+- `frontend/pnpm-lock.yaml` — refreshed via `pnpm update --no-save`.
+- `frontend/package.json` — unchanged (explicitly verified).
+- This entry.
+
+### Confirmation
+No `git push` was run. All validation above was executed locally
+against the working tree — the frontend lockfile experiment was run on
+an isolated, uncommitted branch that was fully discarded before the
+real implementation began. Awaiting the Fase 4 report review and
+explicit approval before push and before any Dependabot PR is closed.
