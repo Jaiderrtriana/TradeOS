@@ -71,11 +71,12 @@ async def _publish_confidence_criterion(client, headers, suffix: str) -> str:
     and publishes it -- returns the criterion's `source_field`, so a
     caller can supply a real `checklist_answers` value and get a
     non-`None` `confidence_score` back."""
+    source_field: str = f"confidence_{suffix}_field"
     criterion_payload = {
         "id": f"confidence.{suffix}",
         "engine_type_code": "confidence",
         "name": f"Confidence {suffix}",
-        "source_field": f"confidence_{suffix}_field",
+        "source_field": source_field,
         "min_value": 0,
         "max_value": 100,
         "category_map": {"Yes": 100, "No": 0},
@@ -99,7 +100,7 @@ async def _publish_confidence_criterion(client, headers, suffix: str) -> str:
         f"/api/v1/configuration/versions/{version_id}/publish", headers=headers
     )
     assert publish_response.status_code == 200, publish_response.text
-    return criterion_payload["source_field"]
+    return source_field
 
 
 async def _register_trade(

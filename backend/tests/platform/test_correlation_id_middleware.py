@@ -20,7 +20,7 @@ from app.platform.security.jwt import create_access_token
 
 
 @contextmanager
-def capture_logs_with_context() -> Iterator[list[dict]]:
+def capture_logs_with_context() -> Iterator[list[structlog.typing.EventDict]]:
     """
     Like structlog.testing.capture_logs(), but keeps merge_contextvars in
     the processor chain. capture_logs() replaces *all* processors

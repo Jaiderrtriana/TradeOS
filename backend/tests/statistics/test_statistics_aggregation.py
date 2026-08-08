@@ -13,6 +13,7 @@ restriction, since window validation is the presentation layer's job.
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import TypedDict, Unpack
 
 from app.modules.statistics.domain.statistics_aggregation import (
     UNASSIGNED,
@@ -26,24 +27,40 @@ from app.modules.statistics.domain.statistics_aggregation import (
 _BASE_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def _fact(**overrides) -> StatisticsFact:
-    defaults = dict(
-        result="tp",
-        realized_pnl=0.0,
-        r_multiple=1.0,
-        strategy_id=None,
-        setup_id=None,
-        session_id=None,
-        direction="long",
-        entered_at=_BASE_TIME,
-        confidence_score=None,
-        quality_score=None,
-        execution_score=None,
-        market_context_score=None,
-        bias_score=None,
-    )
-    defaults.update(overrides)
-    return StatisticsFact(**defaults)
+class _FactKwargs(TypedDict, total=False):
+    result: str | None
+    realized_pnl: float
+    r_multiple: float | None
+    strategy_id: uuid.UUID | None
+    setup_id: uuid.UUID | None
+    session_id: uuid.UUID | None
+    direction: str
+    entered_at: datetime
+    confidence_score: float | None
+    quality_score: float | None
+    execution_score: float | None
+    market_context_score: float | None
+    bias_score: float | None
+
+
+def _fact(**overrides: Unpack[_FactKwargs]) -> StatisticsFact:
+    defaults: _FactKwargs = {
+        "result": "tp",
+        "realized_pnl": 0.0,
+        "r_multiple": 1.0,
+        "strategy_id": None,
+        "setup_id": None,
+        "session_id": None,
+        "direction": "long",
+        "entered_at": _BASE_TIME,
+        "confidence_score": None,
+        "quality_score": None,
+        "execution_score": None,
+        "market_context_score": None,
+        "bias_score": None,
+    }
+    merged: _FactKwargs = {**defaults, **overrides}
+    return StatisticsFact(**merged)
 
 
 def test_empty_input_returns_all_none():

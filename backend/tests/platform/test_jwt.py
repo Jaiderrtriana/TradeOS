@@ -9,7 +9,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
-from jose import jwt as jose_jwt
+from jose import jwt as jose_jwt  # type: ignore[import-untyped]  # no `types-python-jose` — not adding a package outside the Technical Stack for stubs alone
 
 from app.platform.config import settings
 from app.platform.security.jwt import (
