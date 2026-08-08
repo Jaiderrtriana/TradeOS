@@ -5619,3 +5619,118 @@ against the working tree — the frontend lockfile experiment was run on
 an isolated, uncommitted branch that was fully discarded before the
 real implementation began. Awaiting the Fase 4 report review and
 explicit approval before push and before any Dependabot PR is closed.
+
+**Post-approval update**: pushed as commit `16336e2`. Dependabot #1 and
+#8 closed via `gh pr close --comment` with the rationale documented
+above. Real GitHub Actions validation against this commit: `backend-ci`
+progressed through `ruff format`/`ruff lint` (first time ever) but
+failed at `mypy` — meaning `pytest`/`pip-audit`/Testcontainers did not
+run for this commit (see the Mypy Remediation sprint below, which
+exists specifically to unblock this). `container-scan` failed as
+expected on real OS-level CVEs (23 findings, unchanged — outside this
+sprint's scope) while the Python layer dropped from 5→2 findings,
+confirmed via Trivy log showing `starlette-1.3.1.dist-info` reporting 0
+vulnerabilities. `frontend-ci` passed completely, `pnpm audit`
+(report-only) showing 13→8 findings in the real CI log, matching local
+exactly.
+
+## Sprint de Mypy Remediation — CLOSED
+
+Scope: resolve the 9 pre-existing `mypy` errors exposed as the next
+`backend-ci.yml` blocker once `ruff format`/`ruff check` were fixed
+(see the Dependency & Security Hardening sprint above). Run as an
+independent technical-debt remediation sprint, explicitly not a
+retroactive extension of Sprint 9.4/9.4.1 nor a regression of the
+FastAPI/Starlette upgrade — verified fresh in-session by temporarily
+reinstalling the pre-upgrade `fastapi 0.115.14`/`starlette 0.46.2` and
+re-running `mypy`, which reproduced the identical 9 errors in the same
+files/lines. No application code, dependency version, CI gate, or
+`mypy` configuration was touched.
+
+### Root causes (4 independent groups, never merged)
+- **Group A** (6 errors, `tests/statistics/test_statistics_aggregation.py`):
+  a `dict` literal built with heterogeneous value types, widened by
+  `mypy` to `dict[str, object]`, unpacked against `StatisticsFact`'s
+  precisely-typed dataclass constructor.
+- **Group B** (1 error, `tests/platform/test_jwt.py`): `python-jose`
+  ships no `py.typed` marker and no stub package is installed —
+  identical, already-accepted precedent as `app/platform/security/jwt.py`.
+- **Group C** (1 error, `tests/platform/test_correlation_id_middleware.py`):
+  a helper typed to yield `list[dict]` where `structlog`'s own
+  `LogCapture.entries` is `list[EventDict]`.
+- **Group D** (1 error, `tests/statistics/test_statistics_flow.py`): a
+  heterogeneous `dict` literal indexed and returned as `str`, widened
+  past that type by the literal's other value types.
+
+Transversal finding, deliberately **not** touched: `tests/trading/
+test_trade_domain.py`'s `_trade()` has the identical Group-A pattern
+and would produce 8 more errors under `--check-untyped-defs` — invisible
+today only because it lacks a return-type annotation. Left alone to
+keep this sprint surgical; not folded in as an opportunistic fix, and
+`--check-untyped-defs` was not enabled to go looking for it.
+
+### Fixes applied
+- Group A: `TypedDict(total=False)` + `**overrides: Unpack[_FactKwargs]`
+  (PEP 692, native `typing.Unpack` on Python 3.12) merged via
+  `{**defaults, **overrides}` — zero `type: ignore` needed (a first
+  attempt using `.update()` required one and was rejected).
+- Group B: `# type: ignore[import-untyped]` with the same inline
+  rationale already present in `app/platform/security/jwt.py` — the
+  only new suppression permitted this sprint, matching prior precedent
+  rather than introducing a new one.
+- Group C: `Iterator[list[structlog.typing.EventDict]]`.
+- Group D: extracted the field into a `str`-annotated local variable
+  before building the dict, returning that variable instead of
+  indexing back into the dict.
+
+### Empirical validation
+- Local: `mypy .` — 0 errors across 273 source files. `ruff format
+  --check .` / `ruff check .` — clean. Full `pytest` suite — 357/357
+  passed. Only the 4 approved files changed.
+- Real GitHub Actions (commit `f1fbbcd`, run `31269972460`, job
+  `93134154469`, `ubuntu-latest`, total **2m10s**):
+  - `mypy` — `Success: no issues found in 273 source files`.
+  - `pytest` — `357 passed, 1 warning in 89.22s`. Tests that exercise
+    Testcontainers-backed Postgres passed; the raw log itself contains
+    no explicit container-lifecycle line (`testcontainers`/`docker`
+    packages installing is confirmed, an explicit start/pull message is
+    not) — reported as an observability gap, not asserted as proof of
+    the container lifecycle.
+  - `pip-audit` — real output: `Found 3 known vulnerabilities in 3
+    packages` (`cryptography 49.0.0`, `ecdsa 0.19.2`, `pytest 8.4.2`),
+    exit code 1 on the step, job still green — confirms the
+    `continue-on-error` report-only behavior holds under a real run.
+  - Poetry cache: real cache **miss** (`poetry cache is not found`),
+    fresh venv built and every dependency reinstalled from scratch —
+    consistent with `poetry.lock` having been regenerated one sprint
+    earlier, which changes the cache key. A cache **hit** has not yet
+    been observed on any run and remains unverified.
+  - Python `3.12.13` on the runner, matching local; the same
+    pre-existing `StarletteDeprecationWarning` (httpx/httpx2) appeared,
+    not a new regression.
+
+This was the first fully green `backend-ci.yml` run in the project's
+history — `mypy`, `pytest`, and `pip-audit` all completing in real CI
+for the same commit.
+
+### Explicitly out of scope, carried forward as future work
+- `cryptography`, `ecdsa`, `pytest` `pip-audit` findings — unchanged
+  from the prior sprint's accepted/deferred decisions.
+- Poetry cache hit/miss behavior on a subsequent, unchanged-lockfile
+  run — not yet independently verified.
+- Explicit Testcontainers container-lifecycle logging — an
+  observability improvement, not a correctness gap; no test failure or
+  mock-substitution evidence exists today.
+- `_trade()` in `tests/trading/test_trade_domain.py` and
+  `--check-untyped-defs` — deliberately not touched or enabled.
+
+### Files changed
+- `backend/tests/statistics/test_statistics_aggregation.py`
+- `backend/tests/platform/test_jwt.py`
+- `backend/tests/platform/test_correlation_id_middleware.py`
+- `backend/tests/statistics/test_statistics_flow.py`
+- This entry.
+
+### Confirmation
+Pushed as commit `f1fbbcd`, approved per-instance. No `mypy`
+configuration, dependency, or CI gate was relaxed. Sprint closed.
