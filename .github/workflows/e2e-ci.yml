@@ -1,0 +1,196 @@
+# TradeOS — E2E CI (E2E CI Integration sprint). Runs the existing
+# Playwright suite (frontend/e2e/*.spec.ts, 10 spec files, already
+# written since early sprints but never executed by any CI workflow
+# until now) against a real, ephemeral PostgreSQL + backend
+# (docker-compose.e2e.yml, built from the real production Dockerfile)
+# and a real frontend dev server.
+#
+# `pnpm dev`, not a production build, because `error-banner.spec.ts`'s
+# error-simulation hook (`src/test-support/errorSimulation.ts`) is
+# guarded by `import.meta.env.DEV` and is tree-shaken out of any
+# production build — this is a hard requirement discovered by reading
+# that file, not a preference. `playwright.config.ts`'s own `webServer`
+# (unchanged) already runs `pnpm dev` and waits on it; this workflow
+# only needs to get PostgreSQL + backend ready before Playwright starts.
+#
+# Bootstraps the database exactly the way a fresh clone would per
+# `scripts/bootstrap.py`'s own documented two-stage flow — migrations
+# (`scripts/migrate.py`), then one throwaway registered user (via the
+# real `POST /api/v1/auth/register`, the same endpoint every spec's own
+# `registerAndLogIn` helper already calls), then the Configuration seed
+# (`scripts/seed_configuration.py --user-id <id>`), which is the only
+# mechanism that creates the ~90 `scoring_criteria` rows
+# `configuration-and-catalogs.spec.ts` needs — no migration seeds those.
+# Empirically confirmed (real, isolated, fully torn-down local run) that
+# `POST /trades` returns 422 without this seed having run first.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "frontend/playwright.config.ts"
+      - "frontend/e2e/**"
+      - "backend/Dockerfile"
+      - "backend/docker-compose.e2e.yml"
+      - ".github/workflows/e2e-ci.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "frontend/playwright.config.ts"
+      - "frontend/e2e/**"
+      - "backend/Dockerfile"
+      - "backend/docker-compose.e2e.yml"
+      - ".github/workflows/e2e-ci.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    # Initial value, not a validated one — this is the first-ever run of
+    # this workflow. Backend-ci.yml/frontend-ci.yml use 10, container-scan
+    # (also builds the same Docker image) uses 15; this workflow does
+    # both a Docker build and a Playwright browser install on top, hence
+    # starting at the higher end. Revisit once a real run's actual
+    # duration is known (E2E CI Integration sprint, Fase 3 report).
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Start PostgreSQL + backend (Docker Compose)
+        working-directory: backend
+        run: docker compose -f docker-compose.e2e.yml up -d --build
+
+      # Real readiness, not a fixed sleep: PostgreSQL's own healthcheck
+      # already gates the backend container's start (`depends_on:
+      # condition: service_healthy` in docker-compose.e2e.yml), but the
+      # backend process itself still needs a moment to bind its port
+      # after the container starts — polled here against the same
+      # /healthz liveness endpoint the Dockerfile's own HEALTHCHECK uses.
+      - name: Wait for backend readiness (/healthz)
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/healthz >/dev/null; then
+              echo "Backend ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Backend did not become ready within 30s"
+          exit 1
+
+      # `-T`: disables pseudo-TTY allocation, required for a non-interactive
+      # CI shell (without it, `docker compose exec` can fail with
+      # "the input device is not a TTY").
+      - name: Apply database migrations
+        working-directory: backend
+        run: docker compose -f docker-compose.e2e.yml exec -T backend python scripts/migrate.py
+
+      # Same endpoint every spec's own `registerAndLogIn` helper already
+      # calls (POST /api/v1/auth/register) — not a parallel/divergent
+      # mechanism. The password is a throwaway CI-only value with zero
+      # real-world reuse or value (Fase 2 Security Review): its presence
+      # in this step's echoed command is not a credential leak.
+      - name: Register bootstrap user
+        id: bootstrap_user
+        run: |
+          set -euo pipefail
+          response=$(curl -sf -X POST http://localhost:8000/api/v1/auth/register \
+            -H "Content-Type: application/json" \
+            -d '{"email":"e2e-ci-bootstrap@example.com","password":"e2e-ci-password"}')
+          user_id=$(echo "$response" | jq -r '.user_id')
+          if [ -z "$user_id" ] || [ "$user_id" = "null" ]; then
+            echo "::error::Failed to extract user_id from registration response"
+            exit 1
+          fi
+          echo "user_id=$user_id" >> "$GITHUB_OUTPUT"
+
+      # The only mechanism that creates `scoring_criteria` — no migration
+      # seeds it (confirmed by reading every migration under
+      # backend/alembic/versions/). Reused as-is, unmodified.
+      #
+      # USER_ID is bound via `env:` rather than interpolated directly
+      # into the script body — GitHub's own Security Hardening Guide
+      # recommends this for every `${{ }}` value used inside a `run:`
+      # step, as a blanket defense-in-depth practice independent of
+      # whether a given value is attacker-influenced (this one, a
+      # server-generated UUID from our own backend, is not).
+      - name: Seed Configuration (scoring criteria + first published version)
+        working-directory: backend
+        env:
+          USER_ID: ${{ steps.bootstrap_user.outputs.user_id }}
+        run: docker compose -f docker-compose.e2e.yml exec -T backend python scripts/seed_configuration.py --user-id "$USER_ID"
+
+      # Same Action/version/inputs already validated in frontend-ci.yml —
+      # reused verbatim, not reinvented.
+      - name: Install pnpm and Node
+        uses: pnpm/setup@4700d737c3d7a2e7199f3d42a920f0bf7f34e411 # v2.0.1
+        with:
+          version: "11.10.0"
+          runtime: node@22
+          cache: true
+          install: false
+          package-json-file: frontend/package.json
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      # --with-deps installs the OS-level libraries Chromium headless
+      # needs on ubuntu-latest, which the runner image does not ship by
+      # default (Playwright's own documented CI guidance) — plain
+      # `playwright install chromium` would skip them.
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: pnpm exec playwright install --with-deps chromium
+
+      # `pnpm exec playwright test` directly (functionally identical to
+      # `pnpm run test:e2e` — that script is literally "playwright test")
+      # so extra diagnostic CLI flags can be appended without touching
+      # playwright.config.ts: an HTML report (list stays as the primary,
+      # human-readable console output) and traces retained only on
+      # failure. `workers: 1` and every other setting in
+      # playwright.config.ts are unchanged.
+      #
+      # No `--screenshot` flag: verified against this exact installed
+      # version's own `playwright test --help` (first real CI run failed
+      # with "error: unknown option '--screenshot=only-on-failure'") —
+      # screenshot capture is a `use:` config property, not exposed as a
+      # top-level CLI flag on `playwright test` at all. Not re-added via
+      # playwright.config.ts, which this sprint does not touch.
+      - name: Run Playwright E2E suite
+        working-directory: frontend
+        env:
+          VITE_API_BASE_URL: http://localhost:8000/api/v1
+        run: pnpm exec playwright test --reporter=list,html --trace=retain-on-failure
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          if-no-files-found: warn
+
+      # Real PostgreSQL/backend logs on failure — never just a bare
+      # "Process exited with code 1".
+      - name: Docker Compose logs
+        if: failure()
+        working-directory: backend
+        run: docker compose -f docker-compose.e2e.yml logs
+
+      - name: Tear down Docker Compose stack
+        if: always()
+        working-directory: backend
+        run: docker compose -f docker-compose.e2e.yml down -v
