@@ -5734,3 +5734,131 @@ for the same commit.
 ### Confirmation
 Pushed as commit `f1fbbcd`, approved per-instance. No `mypy`
 configuration, dependency, or CI gate was relaxed. Sprint closed.
+
+## Sprint E2E CI Integration — CLOSED
+
+Scope: wire the 10 existing `frontend/e2e/*.spec.ts` files (30 tests,
+written across sprints since Sprint 0.3 but never executed by any CI
+workflow) into GitHub Actions, against a real ephemeral PostgreSQL +
+backend, not a mocked or simplified stand-in. Run under the same
+6-phase cycle as every other sprint in this project (Análisis → Riesgos
+→ Plan Técnico → Implementación → Validación → Informe), with an
+explicit rule carried through every phase: no test file, no
+`playwright.config.ts`, no `package.json`, and no application code
+would be modified to make this work — only infrastructure.
+
+### Fase 1 (Análisis) findings, all confirmed by direct code reading
+- `error-banner.spec.ts` requires the frontend to run via `pnpm dev`,
+  not a production build: its error-simulation hook
+  (`src/test-support/errorSimulation.ts`) is guarded by
+  `import.meta.env.DEV` and tree-shaken out of any `vite build`.
+  `playwright.config.ts`'s own `webServer` already runs `pnpm dev` —
+  this sprint did not change that.
+- `configuration-and-catalogs.spec.ts` depends on `scoring_criteria`
+  rows existing — the only mechanism that creates them is
+  `scripts/seed_configuration.py`, which requires a real,
+  already-registered user (`--user-id`). No Alembic migration seeds
+  this table (confirmed by reading all 12 migrations); migrations
+  `0004`/`0005` do seed `scoring_profiles` (3 rows) and `catalog_entries`
+  (37 rows) directly, so those two are migration-covered.
+- `playbook.spec.ts`'s third test calls `POST /trades` without first
+  publishing its own `ScoringConfigurationVersion` (unlike every other
+  spec touching `/trades`) — an implicit dependency on another spec (or
+  this sprint's own bootstrap step) having already published one.
+  Empirically reproduced in an isolated, fully torn-down local
+  environment: `POST /trades` against a freshly-migrated database with
+  no Configuration ever published returns `422 "No configuration
+  version is available to evaluate against."` — confirming this as a
+  real precondition, not a hypothetical one.
+- `backend/docker-compose.container.yml` (Sprint 9.1) publishes the
+  backend on host port 8080 specifically to avoid colliding with a
+  local `pnpm dev`/`uvicorn --reload` session — incompatible with this
+  sprint's need for port 8000 (every spec and `VITE_API_BASE_URL`
+  hardcode it). Reusing that file's *pattern* (Postgres with
+  `pg_isready` healthcheck + backend built from the real `Dockerfile`,
+  gated by `depends_on: condition: service_healthy`) in a new, isolated
+  file was judged safer than modifying the original and regressing its
+  documented local-development purpose.
+
+### Decision: new `backend/docker-compose.e2e.yml`, not a modification of the Sprint 9.1 file
+Same two-service shape, its own Compose project `name:` (avoiding the
+exact container/volume-collision class that file's own header comment
+already documents as a real, previously-hit incident), backend on
+`8000:8000`, no host port published for Postgres (only the `backend`
+service, inside the same Compose network, needs to reach it).
+
+### Decision: database bootstrap — migrations, then a real registered user, then the Configuration seed
+No prior mechanism in this repository automated the "empty Postgres →
+E2E-ready backend" sequence — `scripts/bootstrap.py` is explicitly
+documented as a local-development convenience, not a CI or deployment
+mechanism. The workflow now performs this itself:
+`scripts/migrate.py` → `curl -X POST /api/v1/auth/register` (the same
+real endpoint every spec's own `registerAndLogIn` helper already calls
+— not a parallel or invented mechanism) → `user_id` captured from the
+real JSON response → `scripts/seed_configuration.py --user-id <id>`,
+run via `docker compose exec` directly inside the backend container
+(which already ships `PYTHONPATH=/app` and the production dependency
+set, needing no separate Poetry install on the runner).
+
+### Empirical validation before any push
+Ran the exact new `docker-compose.e2e.yml` file and bootstrap sequence
+locally, fully isolated and fully torn down afterward (confirmed via
+`docker ps`/`docker network ls` showing nothing left behind): Postgres
+healthy in ~5s, backend `/healthz` ready in ~5s, all 12 real migrations
+applied, a real user registered, `scripts/seed_configuration.py`
+completed and published `v1.0` with all ~90 criteria.
+
+### First real GitHub Actions run — failure, diagnosed, minimal fix
+The first real run (PR #12, run `31273025855`) failed at the Playwright
+step itself, before any of the 10 specs executed: `error: unknown
+option '--screenshot=only-on-failure'`. All 5 database/backend
+bootstrap steps had already passed in that same run. Root cause:
+`--screenshot` is a `use:` config property in Playwright, never a
+top-level CLI flag on `playwright test` — verified directly against
+this project's installed Playwright version's own `playwright test
+--help` output before writing the fix, rather than assumed again.
+Minimal fix applied: removed only that flag (commit `943238d`);
+`--reporter=list,html` and `--trace=retain-on-failure` (both confirmed
+present in the same `--help` output) were untouched.
+
+### Second real GitHub Actions run — green
+Run `31273210048`, job `e2e`, **2m53s total**:
+- PostgreSQL healthy + backend built and started: ~32s.
+- `/healthz` readiness: ~3s.
+- 12 migrations applied: ~2s.
+- Bootstrap user registered: ~1s.
+- Configuration seed (~90 criteria, `v1.0` published): ~2.6s.
+- pnpm/Node/dependencies/Chromium installed: ~42s.
+- **Playwright suite: `30 passed (1.4m)`** — all 10 spec files, zero
+  retries, zero flaky tests. This includes the two specs Fase 1 flagged
+  as at-risk: `configuration-and-catalogs.spec.ts` (needs the
+  Configuration seed) and `playbook.spec.ts` (needs a Configuration
+  already published before its third test runs) — both passed, and
+  `error-banner.spec.ts` passed running against `pnpm dev` as required.
+- Cleanup confirmed in the real log: both containers and the Compose
+  network stopped and removed.
+
+### Explicitly out of scope, unaffected by this sprint
+- `backend-ci.yml` and `container-scan.yml` also ran on PR #12 (they
+  match its `backend/**` changes) — not reviewed as part of this
+  sprint's acceptance criteria; any failure there is a separate concern,
+  not attributable to the E2E workflow.
+- Automatic staging deploy and the manual-approval production gate
+  (`docs/10_TRADEOS_TECHNICAL_STACK.md` §12) — not in this sprint's
+  scope.
+- No dependency version, test assertion, `playwright.config.ts`
+  setting, or application code was changed at any point in this sprint.
+
+### Files changed
+- `backend/docker-compose.e2e.yml` — new.
+- `.github/workflows/e2e-ci.yml` — new.
+- `docs/10_TRADEOS_TECHNICAL_STACK.md` — Section 12.3 and version history
+  updated to record the Playwright E2E stage as operational, with the
+  real run's evidence.
+- This entry.
+
+### Confirmation
+Pushed on branch `feat/e2e-ci-integration`, PR #12. Real GitHub Actions
+evidence obtained and reviewed before this entry was written — not
+declared "implemented" until the 30/30-passing run above existed.
+Sprint closed.
