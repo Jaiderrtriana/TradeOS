@@ -5,6 +5,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError } from "../../../api/errors";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
 import { useErrorReporter } from "../../../components/ErrorContext";
+import { formatInstant, usePreferencesTimezone } from "../../../shared/timezone";
 import { deleteJournalEntry, getJournalEntry } from "../api";
 import { JournalEntryForm } from "../components/JournalEntryForm";
 import { journalKeys } from "../queryKeys";
@@ -21,6 +22,7 @@ export function JournalEntryDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { reportError } = useErrorReporter();
+  const timezone = usePreferencesTimezone();
   const [editOpen, setEditOpen] = useState(false);
 
   const {
@@ -95,8 +97,8 @@ export function JournalEntryDetailPage() {
         </p>
         <p className="mt-4 whitespace-pre-wrap text-sm text-text-primary">{entry.content}</p>
         <p className="mt-4 text-xs text-text-muted">
-          Created {new Date(entry.created_at).toLocaleString()} · Updated{" "}
-          {new Date(entry.updated_at).toLocaleString()}
+          Created {formatInstant(entry.created_at, timezone)} · Updated{" "}
+          {formatInstant(entry.updated_at, timezone)}
         </p>
       </div>
 
@@ -110,7 +112,10 @@ export function JournalEntryDetailPage() {
         </button>
         <ConfirmDialog
           trigger={
-            <button type="button" className="rounded border border-border px-3 py-2 text-sm text-danger">
+            <button
+              type="button"
+              className="rounded border border-border px-3 py-2 text-sm text-danger"
+            >
               Delete
             </button>
           }

@@ -35,6 +35,7 @@ class UserPreferencesRepository:
                 theme=preferences.theme,
                 language=preferences.language,
                 notification_settings=preferences.notification_settings,
+                timezone=preferences.timezone,
                 created_at=preferences.created_at,
                 updated_at=preferences.updated_at,
             )
@@ -48,6 +49,7 @@ class UserPreferencesRepository:
                 theme=preferences.theme,
                 language=preferences.language,
                 notification_settings=preferences.notification_settings,
+                timezone=preferences.timezone,
                 updated_at=preferences.updated_at,
             )
         )
@@ -60,6 +62,7 @@ def _to_domain(row: UserPreferencesModel) -> UserPreferences:
         theme=row.theme,
         language=row.language,
         notification_settings=row.notification_settings,
+        timezone=row.timezone,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

@@ -9,6 +9,7 @@ import { Modal } from "../../../components/Modal";
 import { Select } from "../../../components/Select";
 import { STABLE_DATA_STALE_TIME_MS } from "../../../queryClient";
 import { listScoringProfiles, scoringReferenceKeys } from "../../../shared/scoringReferenceData";
+import { dateOnlyToAwareIso, usePreferencesTimezone } from "../../../shared/timezone";
 import { openTrade } from "../api";
 import { tradingKeys } from "../queryKeys";
 import {
@@ -39,6 +40,7 @@ export function OpenTradeModal({
 }) {
   const queryClient = useQueryClient();
   const { reportError } = useErrorReporter();
+  const timezone = usePreferencesTimezone();
   const schema = useMemo(() => buildOpenTradeSchema(direction), [direction]);
 
   const { data: profiles } = useQuery({
@@ -58,7 +60,16 @@ export function OpenTradeModal({
   });
 
   const openMutation = useMutation({
-    mutationFn: (values: OpenTradeFormValues) => openTrade(tradeId, values),
+    // `values.entered_at` is a date-only string ("2026-01-01") from the
+    // `<input type="date">` below — anchored to the resolved timezone
+    // before it ever reaches the API, never left for the backend to
+    // guess (Sprint 4 Fase 2, OQ-7 contract; `!` is safe here, the
+    // schema already requires this field non-empty).
+    mutationFn: (values: OpenTradeFormValues) =>
+      openTrade(tradeId, {
+        ...values,
+        entered_at: dateOnlyToAwareIso(values.entered_at, timezone)!,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: tradingKeys.detail(tradeId) });
       queryClient.invalidateQueries({ queryKey: tradingKeys.list({}) });
@@ -83,7 +94,10 @@ export function OpenTradeModal({
       title="Open Trade"
       description="This is the first moment the trade becomes a real, executed position — it also runs the Evaluation for the first time."
     >
-      <form onSubmit={handleSubmit((values) => openMutation.mutate(values))} className="flex flex-col gap-4">
+      <form
+        onSubmit={handleSubmit((values) => openMutation.mutate(values))}
+        className="flex flex-col gap-4"
+      >
         <div>
           <p className="mb-1 text-sm text-text-secondary">Trade Type</p>
           <Controller

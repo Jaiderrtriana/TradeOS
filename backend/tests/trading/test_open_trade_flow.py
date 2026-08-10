@@ -137,6 +137,28 @@ async def test_register_planned_trade_rejects_entry_price_present(client):
     assert response.json()["error"]["code"] == "UNPROCESSABLE_ENTITY"
 
 
+async def test_open_trade_rejects_naive_entered_at(client):
+    """Sprint 4 Fase 2 (OQ-7) approved contract: a naive datetime must
+    never reach the TIMESTAMPTZ column — it would otherwise be silently
+    interpreted as the *server's* system timezone. Caught at the Pydantic
+    boundary (`AwareDatetime`), before any application logic runs — no
+    published configuration version is needed for this to 422."""
+    headers = await _auth_headers(client)
+    trade = await _register_planned_trade(client, headers)
+
+    response = await client.post(
+        f"/api/v1/trades/{trade['id']}/open",
+        json={
+            "entry_price": 100.0,
+            "entered_at": "2026-01-01T00:00:00",  # naive, no offset
+            "scoring_profile": PROFILE,
+        },
+        headers=headers,
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
 async def test_get_planned_trade_returns_empty_checklist_and_null_evaluation(client):
     headers = await _auth_headers(client)
     trade = await _register_planned_trade(client, headers)

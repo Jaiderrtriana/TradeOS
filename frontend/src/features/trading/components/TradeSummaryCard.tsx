@@ -1,4 +1,5 @@
 import { Badge, type BadgeTone } from "../../../components/Badge";
+import { formatInstant, usePreferencesTimezone } from "../../../shared/timezone";
 import type { TradeDetail } from "../types";
 
 const STATUS_TONE: Record<string, BadgeTone> = {
@@ -30,11 +31,15 @@ function field(label: string, value: string) {
  * `mae_r`/`captured_pct`/`potential_left_r`, §6.9).
  */
 export function TradeSummaryCard({ trade }: { trade: TradeDetail }) {
+  const timezone = usePreferencesTimezone();
   return (
     <div className="rounded border border-border bg-bg-surface p-4">
       <div className="flex items-center gap-3">
         <h2 className="text-base font-semibold text-text-primary">{trade.market}</h2>
-        <Badge label={trade.direction === "long" ? "Long" : "Short"} tone={trade.direction === "long" ? "accent" : "muted"} />
+        <Badge
+          label={trade.direction === "long" ? "Long" : "Short"}
+          tone={trade.direction === "long" ? "accent" : "muted"}
+        />
         <Badge label={trade.status.toUpperCase()} tone={STATUS_TONE[trade.status] ?? "neutral"} />
         {trade.result !== null && (
           <Badge label={trade.result.toUpperCase()} tone={RESULT_TONE[trade.result] ?? "neutral"} />
@@ -52,16 +57,25 @@ export function TradeSummaryCard({ trade }: { trade: TradeDetail }) {
         {field("R-Multiple", trade.r_multiple !== null ? trade.r_multiple.toFixed(2) : "—")}
         {field("MFE (R)", trade.mfe_r !== null ? trade.mfe_r.toFixed(2) : "—")}
         {field("MAE (R)", trade.mae_r !== null ? trade.mae_r.toFixed(2) : "—")}
-        {field("Captured %", trade.captured_pct !== null ? `${trade.captured_pct.toFixed(1)}%` : "—")}
+        {field(
+          "Captured %",
+          trade.captured_pct !== null ? `${trade.captured_pct.toFixed(1)}%` : "—",
+        )}
         {field(
           "Potential Left (R)",
           trade.potential_left_r !== null ? trade.potential_left_r.toFixed(2) : "—",
         )}
         {field("Realized P&L", String(trade.realized_pnl))}
-        {field("ROI %", trade.roi_percent !== null ? `${(trade.roi_percent * 100).toFixed(1)}%` : "—")}
-        {field("P&L %", trade.pnl_percent !== null ? `${(trade.pnl_percent * 100).toFixed(1)}%` : "—")}
-        {field("Entered At", trade.entered_at ? new Date(trade.entered_at).toLocaleString() : "—")}
-        {field("Closed At", trade.closed_at ? new Date(trade.closed_at).toLocaleString() : "—")}
+        {field(
+          "ROI %",
+          trade.roi_percent !== null ? `${(trade.roi_percent * 100).toFixed(1)}%` : "—",
+        )}
+        {field(
+          "P&L %",
+          trade.pnl_percent !== null ? `${(trade.pnl_percent * 100).toFixed(1)}%` : "—",
+        )}
+        {field("Entered At", trade.entered_at ? formatInstant(trade.entered_at, timezone) : "—")}
+        {field("Closed At", trade.closed_at ? formatInstant(trade.closed_at, timezone) : "—")}
       </div>
 
       {trade.notes && (

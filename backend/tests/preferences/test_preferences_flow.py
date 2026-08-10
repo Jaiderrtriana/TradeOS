@@ -43,7 +43,12 @@ async def test_preferences_are_auto_created_with_defaults_at_registration(client
     )
     assert response.status_code == 200
     body = response.json()
-    assert body == {"theme": "dark", "language": "es", "notification_settings": {}}
+    assert body == {
+        "theme": "dark",
+        "language": "es",
+        "notification_settings": {},
+        "timezone": None,
+    }
 
 
 async def test_preferences_endpoint_never_404s_for_an_authenticated_user(client):
@@ -74,7 +79,12 @@ async def test_patch_updates_theme_and_language(client):
         "/api/v1/preferences", json={"theme": "light", "language": "en"}, headers=headers
     )
     assert response.status_code == 200
-    assert response.json() == {"theme": "light", "language": "en", "notification_settings": {}}
+    assert response.json() == {
+        "theme": "light",
+        "language": "en",
+        "notification_settings": {},
+        "timezone": None,
+    }
 
     get_response = await client.get("/api/v1/preferences", headers=headers)
     assert get_response.json()["theme"] == "light"
@@ -128,3 +138,45 @@ async def test_two_users_have_independent_preferences(client):
         "/api/v1/preferences", headers={"Authorization": f"Bearer {token_b}"}
     )
     assert response_b.json()["theme"] == "dark"  # user B's own default, unaffected by user A
+
+
+async def test_patch_persists_valid_iana_timezone(client):
+    """Sprint 4 Fase 2 (OQ-7) approved contract: an IANA identifier
+    persists and is echoed back on a subsequent GET."""
+    access_token = await _register_and_login(client, "tzvalid@example.com")
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    response = await client.patch(
+        "/api/v1/preferences", json={"timezone": "America/Bogota"}, headers=headers
+    )
+    assert response.status_code == 200
+    assert response.json()["timezone"] == "America/Bogota"
+
+    get_response = await client.get("/api/v1/preferences", headers=headers)
+    assert get_response.json()["timezone"] == "America/Bogota"
+
+
+async def test_patch_rejects_non_iana_timezone(client):
+    """Fixed offsets ("UTC-5", "GMT-5") are rejected — only real IANA
+    identifiers represent DST correctly (Sprint 4 Fase 2, approved
+    contract)."""
+    access_token = await _register_and_login(client, "tzinvalid@example.com")
+    response = await client.patch(
+        "/api/v1/preferences",
+        json={"timezone": "UTC-5"},
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
+async def test_patch_timezone_is_partial_other_fields_preserved(client):
+    access_token = await _register_and_login(client, "tzpartial@example.com")
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    await client.patch("/api/v1/preferences", json={"theme": "light"}, headers=headers)
+    await client.patch("/api/v1/preferences", json={"timezone": "Europe/Madrid"}, headers=headers)
+    response = await client.get("/api/v1/preferences", headers=headers)
+
+    assert response.json()["theme"] == "light"  # untouched by the timezone-only patch
+    assert response.json()["timezone"] == "Europe/Madrid"
