@@ -10,6 +10,7 @@ import { Select } from "../../../components/Select";
 import { useErrorReporter } from "../../../components/ErrorContext";
 import { ApiError } from "../../../api/errors";
 import { STABLE_DATA_STALE_TIME_MS } from "../../../queryClient";
+import { formatInstant, usePreferencesTimezone } from "../../../shared/timezone";
 import {
   listScoringCriteria,
   listScoringProfiles,
@@ -58,6 +59,7 @@ const STATUS_TONE: Record<ScoringConfigurationVersionStatus, "accent" | "neutral
 export function ScoringVersionsTab() {
   const queryClient = useQueryClient();
   const { reportError } = useErrorReporter();
+  const timezone = usePreferencesTimezone();
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
 
   const { data: versions, isLoading: versionsLoading } = useQuery({
@@ -168,7 +170,7 @@ export function ScoringVersionsTab() {
               {
                 key: "published_at",
                 header: "Published",
-                render: (v) => (v.published_at ? new Date(v.published_at).toLocaleString() : "—"),
+                render: (v) => (v.published_at ? formatInstant(v.published_at, timezone) : "—"),
               },
             ]}
             rows={versions}

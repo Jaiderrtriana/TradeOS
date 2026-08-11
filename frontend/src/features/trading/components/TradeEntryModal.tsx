@@ -6,6 +6,7 @@ import { ApiError } from "../../../api/errors";
 import { useErrorReporter } from "../../../components/ErrorContext";
 import { Modal } from "../../../components/Modal";
 import { Tabs } from "../../../components/Tabs";
+import { dateOnlyToAwareIso, usePreferencesTimezone } from "../../../shared/timezone";
 import { registerTrade } from "../api";
 import { useTradeEntryForm } from "../hooks/useTradeEntryForm";
 import { tradingKeys } from "../queryKeys";
@@ -42,6 +43,7 @@ export interface TradeEntryModalProps {
 export function TradeEntryModal({ open, onOpenChange, onCreated }: TradeEntryModalProps) {
   const queryClient = useQueryClient();
   const { reportError } = useErrorReporter();
+  const timezone = usePreferencesTimezone();
   const { form, mode, setMode, checklistAnswers, handleAnswerChange, reset } = useTradeEntryForm();
   const [tradeTypeDialogOpen, setTradeTypeDialogOpen] = useState(false);
 
@@ -65,8 +67,16 @@ export function TradeEntryModal({ open, onOpenChange, onCreated }: TradeEntryMod
   }
 
   function onSubmit(values: RegisterTradePayload) {
+    // `entered_at`/`closed_at` are date-only strings ("2026-01-01") from
+    // Simple/Pro's shared `<input type="date">` fields — anchored to the
+    // resolved timezone before they ever reach the API, never left for
+    // the backend to guess (Sprint 4 Fase 2, OQ-7 contract). Applied once
+    // here rather than in each form, since both modes submit through
+    // this one handler.
     const payload: RegisterTradePayload = {
       ...values,
+      entered_at: dateOnlyToAwareIso(values.entered_at, timezone),
+      closed_at: dateOnlyToAwareIso(values.closed_at, timezone),
       checklist_answers: Object.keys(checklistAnswers).length > 0 ? checklistAnswers : undefined,
     };
     createTrade.mutate(payload);
@@ -102,7 +112,10 @@ export function TradeEntryModal({ open, onOpenChange, onCreated }: TradeEntryMod
                 value: "pro",
                 label: "Cambiar a Pro",
                 content: (
-                  <ProForm checklistAnswers={checklistAnswers} onAnswerChange={handleAnswerChange} />
+                  <ProForm
+                    checklistAnswers={checklistAnswers}
+                    onAnswerChange={handleAnswerChange}
+                  />
                 ),
               },
             ]}

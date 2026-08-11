@@ -33,6 +33,7 @@ async def get_preferences(
         theme=preferences.theme,
         language=preferences.language,
         notification_settings=preferences.notification_settings,
+        timezone=preferences.timezone,
     )
 
 
@@ -48,10 +49,12 @@ async def update_preferences(
         theme=payload.theme,
         language=payload.language,
         notification_settings=payload.notification_settings,
+        timezone_=payload.timezone,
     )
     await session.commit()
     return PreferencesResponse(
         theme=preferences.theme,
         language=preferences.language,
         notification_settings=preferences.notification_settings,
+        timezone=preferences.timezone,
     )

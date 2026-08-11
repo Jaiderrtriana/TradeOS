@@ -5,6 +5,7 @@ import { Link, useParams } from "react-router-dom";
 import { Badge } from "../../../components/Badge";
 import { DataTable } from "../../../components/DataTable";
 import { Tabs } from "../../../components/Tabs";
+import { formatInstant, usePreferencesTimezone } from "../../../shared/timezone";
 import { getTradeEvaluation, getTradeEvaluationHistory } from "../api";
 import { ScorePanel } from "../components/ScorePanel";
 import { tradingKeys } from "../queryKeys";
@@ -37,6 +38,7 @@ function SnapshotPanels({ snapshot }: { snapshot: EvaluationSnapshot }) {
  */
 export function RuleExplorerPage() {
   const { tradeId } = useParams<{ tradeId: string }>();
+  const timezone = usePreferencesTimezone();
   const [selectedHistoryEntry, setSelectedHistoryEntry] = useState<EvaluationHistoryEntry | null>(
     null,
   );
@@ -94,7 +96,7 @@ export function RuleExplorerPage() {
                     {
                       key: "created_at",
                       header: "Date",
-                      render: (entry) => new Date(entry.created_at).toLocaleString(),
+                      render: (entry) => formatInstant(entry.created_at, timezone),
                     },
                     {
                       key: "configuration_version_id",

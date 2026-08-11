@@ -31,6 +31,10 @@ class UserPreferencesModel(Base):
     notification_settings: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict
     )
+    # IANA identifier, nullable = not explicitly set (Sprint 4, OQ-7).
+    # Longest real IANA identifiers are ~30 chars (e.g.
+    # "America/Argentina/ComodRivadavia"); 50 leaves headroom.
+    timezone: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )

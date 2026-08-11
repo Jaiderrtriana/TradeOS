@@ -1,8 +1,24 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
 
 import type { TradeDetail } from "../types";
 import { TradeSummaryCard } from "./TradeSummaryCard";
+
+/** `TradeSummaryCard` resolves its display timezone via
+ * `usePreferencesTimezone` (Sprint 4, OQ-7), which needs a QueryClient in
+ * context — same `renderWithProviders` pattern as `JournalEntryForm.test.tsx`.
+ * The `/preferences` fetch it triggers is never mocked here: it rejects in
+ * this jsdom environment, `usePreferencesTimezone` falls back to the
+ * browser-detected zone exactly as it would for a real logged-out/loading
+ * state, and no test below asserts on the exact formatted string — only on
+ * presence/absence — so that fallback is irrelevant to what's being tested.
+ */
+function renderWithProviders(ui: ReactNode) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
 
 const EMPTY_ENGINE = { score: null, grade: null, breakdown: [] };
 const EMPTY_BIAS = { score: null, breakdown: [] };
@@ -54,27 +70,27 @@ function buildTrade(overrides: Partial<TradeDetail> = {}): TradeDetail {
 
 describe("TradeSummaryCard", () => {
   it("renders the market as a heading and the direction/status badges", () => {
-    render(<TradeSummaryCard trade={buildTrade()} />);
+    renderWithProviders(<TradeSummaryCard trade={buildTrade()} />);
     expect(screen.getByRole("heading", { name: "EURUSD" })).toBeInTheDocument();
     expect(screen.getByText("Long")).toBeInTheDocument();
     expect(screen.getByText("OPEN")).toBeInTheDocument();
   });
 
   it("does not render a result badge while result is null", () => {
-    render(<TradeSummaryCard trade={buildTrade()} />);
+    renderWithProviders(<TradeSummaryCard trade={buildTrade()} />);
     expect(screen.queryByText("TP")).not.toBeInTheDocument();
     expect(screen.queryByText("SL")).not.toBeInTheDocument();
     expect(screen.queryByText("BE")).not.toBeInTheDocument();
   });
 
   it("shows an em dash for every not-yet-computed field on an open trade", () => {
-    render(<TradeSummaryCard trade={buildTrade()} />);
+    renderWithProviders(<TradeSummaryCard trade={buildTrade()} />);
     expect(screen.getByText("Exit Price").nextSibling).toHaveTextContent("—");
     expect(screen.getByText("R-Multiple").nextSibling).toHaveTextContent("—");
   });
 
   it("shows an em dash for entry facts on a planned trade", () => {
-    render(
+    renderWithProviders(
       <TradeSummaryCard
         trade={buildTrade({
           status: "planned",
@@ -92,7 +108,7 @@ describe("TradeSummaryCard", () => {
   });
 
   it("renders computed values once the trade is closed", () => {
-    render(
+    renderWithProviders(
       <TradeSummaryCard
         trade={buildTrade({
           status: "closed",
@@ -108,10 +124,16 @@ describe("TradeSummaryCard", () => {
   });
 
   it("renders notes only when present", () => {
-    const { rerender } = render(<TradeSummaryCard trade={buildTrade()} />);
+    const { rerender } = renderWithProviders(<TradeSummaryCard trade={buildTrade()} />);
     expect(screen.queryByText("Notes")).not.toBeInTheDocument();
 
-    rerender(<TradeSummaryCard trade={buildTrade({ notes: "Waited for confirmation." })} />);
+    rerender(
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <TradeSummaryCard trade={buildTrade({ notes: "Waited for confirmation." })} />
+      </QueryClientProvider>,
+    );
     expect(screen.getByText("Notes")).toBeInTheDocument();
     expect(screen.getByText("Waited for confirmation.")).toBeInTheDocument();
   });

@@ -23,6 +23,7 @@ class UpdatePreferencesUseCase:
         theme: str | None = None,
         language: str | None = None,
         notification_settings: dict[str, Any] | None = None,
+        timezone_: str | None = None,
     ) -> UserPreferences:
         preferences = await self._repository.get_by_user_id(user_id)
         if preferences is None:
@@ -36,6 +37,8 @@ class UpdatePreferencesUseCase:
             preferences.language = language
         if notification_settings is not None:
             preferences.notification_settings = notification_settings
+        if timezone_ is not None:
+            preferences.timezone = timezone_
         preferences.updated_at = datetime.now(timezone.utc)
 
         await self._repository.update(preferences)

@@ -5,11 +5,13 @@ export interface PreferencesResponse {
   theme: string;
   language: string;
   notification_settings: Record<string, unknown>;
+  timezone: string | null;
 }
 
 export interface UpdatePreferencesPayload {
   theme?: string;
   language?: string;
+  timezone?: string;
 }
 
 export function getPreferences(): Promise<PreferencesResponse> {

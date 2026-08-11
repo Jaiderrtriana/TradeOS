@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { DataTable } from "../../../components/DataTable";
+import { formatInstant, usePreferencesTimezone } from "../../../shared/timezone";
 import { listJournalEntries } from "../api";
 import { JournalEntryForm } from "../components/JournalEntryForm";
 import { journalKeys } from "../queryKeys";
@@ -19,6 +20,7 @@ import type { JournalEntry, ListJournalEntriesFilters } from "../types";
  */
 export function JournalListPage() {
   const navigate = useNavigate();
+  const timezone = usePreferencesTimezone();
   const [filters, setFilters] = useState<ListJournalEntriesFilters>({});
   const [formOpen, setFormOpen] = useState(false);
 
@@ -95,7 +97,9 @@ export function JournalListPage() {
                 key: "reference",
                 header: "Trade / Period",
                 render: (entry) =>
-                  entry.trade_id ? `Trade #${entry.trade_id}` : `${entry.period_start} – ${entry.period_end}`,
+                  entry.trade_id
+                    ? `Trade #${entry.trade_id}`
+                    : `${entry.period_start} – ${entry.period_end}`,
               },
               {
                 key: "content",
@@ -106,7 +110,7 @@ export function JournalListPage() {
               {
                 key: "created_at",
                 header: "Created",
-                render: (entry) => new Date(entry.created_at).toLocaleString(),
+                render: (entry) => formatInstant(entry.created_at, timezone),
               },
             ]}
             rows={entries}
@@ -116,7 +120,11 @@ export function JournalListPage() {
         )}
       </div>
 
-      <JournalEntryForm open={formOpen} onOpenChange={setFormOpen} mode={{ kind: "create-period-scoped" }} />
+      <JournalEntryForm
+        open={formOpen}
+        onOpenChange={setFormOpen}
+        mode={{ kind: "create-period-scoped" }}
+      />
     </div>
   );
 }

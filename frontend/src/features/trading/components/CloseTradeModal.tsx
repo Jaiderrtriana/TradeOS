@@ -6,6 +6,7 @@ import { ApiError } from "../../../api/errors";
 import { useErrorReporter } from "../../../components/ErrorContext";
 import { Modal } from "../../../components/Modal";
 import { Select } from "../../../components/Select";
+import { dateOnlyToAwareIso, usePreferencesTimezone } from "../../../shared/timezone";
 import { closeTrade } from "../api";
 import { tradingKeys } from "../queryKeys";
 import { closeTradeSchema, type CloseTradeFormInput, type CloseTradeFormValues } from "../schemas";
@@ -35,6 +36,7 @@ export function CloseTradeModal({
 }) {
   const queryClient = useQueryClient();
   const { reportError } = useErrorReporter();
+  const timezone = usePreferencesTimezone();
 
   const {
     register,
@@ -47,7 +49,13 @@ export function CloseTradeModal({
   });
 
   const close = useMutation({
-    mutationFn: (values: CloseTradeFormValues) => closeTrade(tradeId, values),
+    // See OpenTradeModal's identical comment — same Sprint 4 Fase 2
+    // (OQ-7) contract, `closed_at` in place of `entered_at`.
+    mutationFn: (values: CloseTradeFormValues) =>
+      closeTrade(tradeId, {
+        ...values,
+        closed_at: dateOnlyToAwareIso(values.closed_at, timezone)!,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: tradingKeys.detail(tradeId) });
       queryClient.invalidateQueries({ queryKey: tradingKeys.list({}) });
@@ -71,7 +79,10 @@ export function CloseTradeModal({
 
   return (
     <Modal open={open} onOpenChange={onOpenChange} title="Close Trade">
-      <form onSubmit={handleSubmit((values) => close.mutate(values))} className="flex flex-col gap-4">
+      <form
+        onSubmit={handleSubmit((values) => close.mutate(values))}
+        className="flex flex-col gap-4"
+      >
         <div>
           <p className="mb-1 text-sm text-text-secondary">Result</p>
           <Controller

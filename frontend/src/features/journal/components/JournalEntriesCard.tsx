@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { DataTable } from "../../../components/DataTable";
+import { formatInstant, usePreferencesTimezone } from "../../../shared/timezone";
 import { listJournalEntries } from "../api";
 import { journalKeys } from "../queryKeys";
 import type { JournalEntry } from "../types";
@@ -18,6 +19,7 @@ import { JournalEntryForm } from "./JournalEntryForm";
  * directly (`eslint.config.js`'s `page` element, Sprint 5.1).
  */
 export function JournalEntriesCard({ tradeId }: { tradeId: string }) {
+  const timezone = usePreferencesTimezone();
   const [formOpen, setFormOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState<JournalEntry | null>(null);
 
@@ -46,7 +48,7 @@ export function JournalEntriesCard({ tradeId }: { tradeId: string }) {
               {
                 key: "created_at",
                 header: "Date",
-                render: (entry) => new Date(entry.created_at).toLocaleString(),
+                render: (entry) => formatInstant(entry.created_at, timezone),
               },
               {
                 key: "content",

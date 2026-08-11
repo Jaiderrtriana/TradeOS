@@ -13,20 +13,40 @@ value.
 """
 
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 Theme = Literal["dark", "light"]
 Language = Literal["es", "en"]
+
+
+def _validate_iana_timezone(value: str | None) -> str | None:
+    """IANA identifiers only (e.g. "America/Bogota"), never a fixed
+    offset — offsets don't represent DST correctly (Sprint 4 Fase 2,
+    approved contract). Validated against the real `zoneinfo` database
+    rather than an allowlist, so any identifier the runtime actually
+    recognizes is accepted."""
+    if value is None:
+        return value
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(f"Unknown IANA timezone identifier: {value!r}") from exc
+    return value
 
 
 class PreferencesResponse(BaseModel):
     theme: str
     language: str
     notification_settings: dict[str, Any]
+    timezone: str | None
 
 
 class UpdatePreferencesRequest(BaseModel):
     theme: Theme | None = None
     language: Language | None = None
     notification_settings: dict[str, Any] | None = None
+    timezone: str | None = None
+
+    _validate_timezone = field_validator("timezone")(_validate_iana_timezone)

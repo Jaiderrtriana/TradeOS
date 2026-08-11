@@ -21,7 +21,7 @@ own `UnprocessableEntityError` (422), not a Pydantic 422.
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 
 from app.modules.trading.domain.trade import DIRECTIONS, RESULTS, STATUSES
 
@@ -42,11 +42,18 @@ class RegisterTradeRequest(BaseModel):
     entry_price: float | None = None
     stop_loss: float | None = None
     take_profit: float | None = None
-    entered_at: datetime | None = None
+    # tz-aware only (Sprint 4 Fase 2, OQ-7 contract) — a naive datetime here
+    # would otherwise be silently interpreted as the *server's* system
+    # timezone before conversion to the TIMESTAMPTZ column, not the
+    # trader's actual local time. The frontend is responsible for resolving
+    # the display/input timezone (Preferences -> browser -> UTC) and
+    # constructing an offset-qualified ISO string before it ever reaches
+    # this schema.
+    entered_at: AwareDatetime | None = None
     # Required additionally when status = closed (§6.4).
     exit_price: float | None = None
     result: str | None = Field(default=None, pattern="^(" + "|".join(RESULTS) + ")$")
-    closed_at: datetime | None = None
+    closed_at: AwareDatetime | None = None
     realized_pnl: float = 0
     size: float = 0
     margin_used: float | None = None
@@ -68,7 +75,7 @@ class OpenTradeRequest(BaseModel):
     `Planned` Trade to `Open`, triggering Evaluation for the first time."""
 
     entry_price: float
-    entered_at: datetime
+    entered_at: AwareDatetime
     scoring_profile: str = Field(max_length=30)
     stop_loss: float | None = None
     take_profit: float | None = None
@@ -112,7 +119,7 @@ class CloseTradeRequest(BaseModel):
     # Both new in v2.0, both trader-supplied (never derived/computed
     # server-side) — see application/close_trade.py's docstring.
     realized_pnl: float
-    closed_at: datetime
+    closed_at: AwareDatetime
     mfe_price: float | None = None
     mae_price: float | None = None
 

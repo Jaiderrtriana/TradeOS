@@ -319,6 +319,24 @@ async def test_close_trade_missing_exit_price_returns_422(client):
     assert response.status_code == 422
 
 
+async def test_close_trade_rejects_naive_closed_at(client):
+    """Sprint 4 Fase 2 (OQ-7) approved contract — see the identical
+    rationale on test_open_trade_rejects_naive_entered_at."""
+    headers = await _auth_headers(client)
+    response = await client.post(
+        f"/api/v1/trades/{uuid.uuid4()}/close",
+        json={
+            "result": "tp",
+            "exit_price": 108.0,
+            "realized_pnl": 80.0,
+            "closed_at": "2026-01-02T00:00:00",  # naive, no offset
+        },
+        headers=headers,
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
 # --- POST /trades/{id}/reevaluate (ReevaluateTrade) ----------------------
 
 

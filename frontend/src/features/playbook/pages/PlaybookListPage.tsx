@@ -6,6 +6,7 @@ import type { ApiError } from "../../../api/errors";
 import { Badge } from "../../../components/Badge";
 import { DataTable } from "../../../components/DataTable";
 import { useErrorReporter } from "../../../components/ErrorContext";
+import { formatInstant, usePreferencesTimezone } from "../../../shared/timezone";
 import { CatalogPickerModal } from "../../trading/components/CatalogPickerModal";
 import { createPlaybookSetup, listPlaybookSetups } from "../api";
 import { playbookKeys } from "../queryKeys";
@@ -30,6 +31,7 @@ export function PlaybookListPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { reportError } = useErrorReporter();
+  const timezone = usePreferencesTimezone();
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
@@ -87,7 +89,7 @@ export function PlaybookListPage() {
               {
                 key: "updated_at",
                 header: "Last Updated",
-                render: (setup) => new Date(setup.updated_at).toLocaleString(),
+                render: (setup) => formatInstant(setup.updated_at, timezone),
               },
             ]}
             rows={setups}
