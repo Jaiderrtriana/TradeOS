@@ -134,7 +134,7 @@ jobs:
       # Same Action/version/inputs already validated in frontend-ci.yml —
       # reused verbatim, not reinvented.
       - name: Install pnpm and Node
-        uses: pnpm/setup@4700d737c3d7a2e7199f3d42a920f0bf7f34e411 # v2.0.1
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           version: "11.10.0"
           runtime: node@22
