@@ -8,7 +8,7 @@
 # migrations and seeding are separate, independently-invoked steps, never
 # baked into container startup (a multi-replica deployment must not have
 # every replica racing to apply migrations on its own boot).
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 WORKDIR /app
 
